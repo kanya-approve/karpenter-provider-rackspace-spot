@@ -73,6 +73,10 @@ type Provider interface {
 	Get(ctx context.Context, providerID string) (*Pool, error)
 	Delete(ctx context.Context, providerID string) error
 	List(ctx context.Context, cloudspace string) ([]*Pool, error)
+	// OrganizationID returns the (cached) Rackspace org ID derived from the
+	// authenticated principal. Other packages need it to call Cloudspace and
+	// other org-scoped SDK endpoints.
+	OrganizationID(ctx context.Context) (string, error)
 }
 
 type DefaultProvider struct {
@@ -230,6 +234,10 @@ func (p *DefaultProvider) List(ctx context.Context, cloudspace string) ([]*Pool,
 		pools = append(pools, onDemandToPool(od, cloudspace))
 	}
 	return pools, nil
+}
+
+func (p *DefaultProvider) OrganizationID(ctx context.Context) (string, error) {
+	return p.organization(ctx)
 }
 
 func (p *DefaultProvider) organization(ctx context.Context) (string, error) {

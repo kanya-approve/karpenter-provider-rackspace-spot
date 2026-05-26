@@ -21,6 +21,9 @@ import (
 	karpoperator "sigs.k8s.io/karpenter/pkg/operator"
 
 	apiv1 "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/apis/v1"
+	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/instance"
+	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/instancetype"
+	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/pricing"
 )
 
 func init() {
@@ -33,6 +36,10 @@ type Operator struct {
 
 	// SpotClient is the authenticated Rackspace Spot API client.
 	SpotClient rxtspot.SpotAPI
+
+	InstanceProvider     instance.Provider
+	InstanceTypeProvider instancetype.Provider
+	PricingProvider      pricing.Provider
 }
 
 // NewOperator builds the provider Operator. The Rackspace refresh token is
@@ -53,7 +60,10 @@ func NewOperator(ctx context.Context, coreOp *karpoperator.Operator) (context.Co
 	logger.Info("authenticated to Rackspace Spot")
 
 	return ctx, &Operator{
-		Operator:   coreOp,
-		SpotClient: client,
+		Operator:             coreOp,
+		SpotClient:           client,
+		InstanceProvider:     instance.NewProvider(client),
+		InstanceTypeProvider: instancetype.NewProvider(client),
+		PricingProvider:      pricing.NewProvider(),
 	}
 }
