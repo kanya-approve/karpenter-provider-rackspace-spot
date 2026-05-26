@@ -4,8 +4,6 @@ metadata:
   name: default
 spec:
   cloudspaceName: my-cloudspace
-  # Required when a NodePool requests capacity-type=spot.
-  bidPrice: "0.05"
   labels:
     team: platform
   # Optional: narrow the eligible ServerClasses by category, region, etc.

@@ -54,14 +54,6 @@ type RackspaceSpotNodeClassSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	CloudspaceName string `json:"cloudspaceName"`
 
-	// BidPrice is the per-hour USD bid used for SpotNodePools. Required when
-	// a NodePool referencing this NodeClass requests capacity-type=spot.
-	// Ignored for on-demand provisioning.
-	//
-	// +kubebuilder:validation:Pattern=`^[0-9]+(\.[0-9]{1,3})?$`
-	// +optional
-	BidPrice string `json:"bidPrice,omitempty"`
-
 	// ServerClassSelector narrows which ServerClasses are considered when
 	// scheduling. If unset, all ServerClasses in the Cloudspace's region are
 	// eligible.

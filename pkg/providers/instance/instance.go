@@ -22,8 +22,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	karpcloudprovider "sigs.k8s.io/karpenter/pkg/cloudprovider"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	apiv1 "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/apis/v1"
+	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/pricing"
 )
 
 const (
@@ -86,13 +88,14 @@ type DefaultProvider struct {
 	spot     rxtspot.SpotNodePoolAPI
 	onDemand rxtspot.OnDemandNodePoolAPI
 	orgs     rxtspot.OrganizationAPI
+	pricing  pricing.Provider
 
 	orgMu sync.Mutex
 	org   string
 }
 
-func NewProvider(api API) *DefaultProvider {
-	return &DefaultProvider{spot: api, onDemand: api, orgs: api}
+func NewProvider(api API, pricingProvider pricing.Provider) *DefaultProvider {
+	return &DefaultProvider{spot: api, onDemand: api, orgs: api, pricing: pricingProvider}
 }
 
 func (p *DefaultProvider) Create(ctx context.Context, nodeClass *apiv1.RackspaceSpotNodeClass, nodeClaim *karpv1.NodeClaim, instanceTypes []*karpcloudprovider.InstanceType) (*Pool, error) {
@@ -115,7 +118,7 @@ func (p *DefaultProvider) Create(ctx context.Context, nodeClass *apiv1.Rackspace
 
 	switch capacityType {
 	case karpv1.CapacityTypeSpot:
-		bid, err := chooseBidPrice(instanceType, nodeClass.Spec.BidPrice)
+		bid, err := p.chooseBidPrice(ctx, instanceType)
 		if err != nil {
 			return nil, fmt.Errorf("choosing bid for spot pool %s: %w", name, err)
 		}
@@ -279,21 +282,18 @@ func PoolName(nc *karpv1.NodeClaim) string {
 }
 
 // chooseBidPrice computes the bid we send to Rackspace at pool-create time.
-// The market price floats every few seconds; a static bid set in the
-// NodeClass will eventually drop below the live market and Rackspace's
-// admission webhook will reject (BidPrice >= market is enforced).
 //
-//   - Start from the spot offering's live price (already pulled from
-//     ServerClass.CurrentMarketPricePerHour during translate()).
-//   - Mark it up by 20% as headroom against intra-minute price movement.
-//   - If NodeClass.spec.bidPrice is set, treat it as a CEILING (max
-//     willing-to-pay). Refuse to launch if market exceeds the ceiling —
-//     this is the user's explicit "no higher than this" knob.
-//   - If unset, no ceiling; we'll always bid market+20%.
+// Strategy: bid max(market, P80) * 1.05.
+//   - market clears Rackspace's "bid >= current market" admission check.
+//   - P80 is the 80th-percentile spot price over the rolling window in
+//     Rackspace's published percentile feed — bidding at-or-above P80 means
+//     we hold the node through ~80% of typical price ticks rather than
+//     getting reclaimed on the next minor spike.
+//   - * 1.05 adds a small buffer for intra-tick movement.
 //
-// Format matches Rackspace's expectation: bare decimal string, no "$"
-// prefix, fixed at 6 decimal places to be safe.
-func chooseBidPrice(instanceType *karpcloudprovider.InstanceType, ceiling string) (string, error) {
+// Falls back to market * 1.2 if the percentile feed lookup fails for any
+// reason (cold start before first live fetch, region/SC missing, etc.).
+func (p *DefaultProvider) chooseBidPrice(ctx context.Context, instanceType *karpcloudprovider.InstanceType) (string, error) {
 	var marketPrice float64
 	for _, off := range instanceType.Offerings {
 		if off.Requirements.Get(karpv1.CapacityTypeLabelKey).Any() == karpv1.CapacityTypeSpot {
@@ -304,20 +304,21 @@ func chooseBidPrice(instanceType *karpcloudprovider.InstanceType, ceiling string
 	if marketPrice == 0 {
 		return "", fmt.Errorf("no spot offering or zero price for instance type %q", instanceType.Name)
 	}
-	bid := marketPrice * 1.2
-	if ceiling != "" {
-		c, err := strconv.ParseFloat(strings.TrimPrefix(strings.TrimSpace(ceiling), "$"), 64)
-		if err != nil {
-			return "", fmt.Errorf("invalid bidPrice ceiling %q: %w", ceiling, err)
-		}
-		if c < marketPrice {
-			return "", fmt.Errorf("market price %.6f exceeds NodeClass bidPrice ceiling %.6f for %q", marketPrice, c, instanceType.Name)
-		}
-		if bid > c {
-			bid = c
+
+	region := instanceType.Requirements.Get(corev1.LabelTopologyZone).Any()
+	target := marketPrice * 1.2 // fallback if percentile lookup fails
+	if region != "" && p.pricing != nil {
+		if pct, err := p.pricing.Percentiles(ctx, region, instanceType.Name); err == nil {
+			pivot := marketPrice
+			if pct.P80 > pivot {
+				pivot = pct.P80
+			}
+			target = pivot * 1.05
+		} else {
+			log.FromContext(ctx).V(1).Info("percentile lookup failed, falling back to market*1.2", "err", err.Error(), "instanceType", instanceType.Name)
 		}
 	}
-	return strconv.FormatFloat(bid, 'f', 6, 64), nil
+	return strconv.FormatFloat(target, 'f', 6, 64), nil
 }
 
 // deriveCapacityType picks one capacity type from the NodeClaim's

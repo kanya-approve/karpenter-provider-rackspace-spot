@@ -1,0 +1,40 @@
+name: Update pricing snapshot
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # weekly, Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Refresh pkg/providers/pricing/initial-prices.json
+        run: |
+          curl -fsSL 'https://ngpc-prod-public-data.s3.us-east-2.amazonaws.com/percentiles.json' \
+            -o pkg/providers/pricing/initial-prices.json
+
+      - uses: peter-evans/create-pull-request@v8
+        with:
+          commit-message: "chore(pricing): refresh percentile snapshot"
+          title: "chore(pricing): scheduled percentile snapshot refresh"
+          body: |
+            Automated refresh of the embedded fallback in
+            `pkg/providers/pricing/initial-prices.json` from
+            <https://ngpc-prod-public-data.s3.us-east-2.amazonaws.com/percentiles.json>.
+
+            The controller fetches the live feed at runtime; this snapshot is
+            only the cold-start / API-outage fallback.
+
+            Review notes: scan for ServerClasses vanishing, prices dropping
+            to zero, or new SKUs appearing — anything else is normal market
+            drift.
+          branch: automated/update-pricing
+          delete-branch: true
+          labels: dependencies

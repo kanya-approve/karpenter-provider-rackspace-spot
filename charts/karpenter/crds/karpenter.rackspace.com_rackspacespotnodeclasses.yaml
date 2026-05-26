@@ -66,13 +66,6 @@ spec:
                   Annotations are propagated to the underlying Rackspace pool's
                   CustomAnnotations.
                 type: object
-              bidPrice:
-                description: |-
-                  BidPrice is the per-hour USD bid used for SpotNodePools. Required when
-                  a NodePool referencing this NodeClass requests capacity-type=spot.
-                  Ignored for on-demand provisioning.
-                pattern: ^[0-9]+(\.[0-9]{1,3})?$
-                type: string
               cloudspaceName:
                 description: |-
                   CloudspaceName is the Rackspace Spot Cloudspace into which pools are

@@ -59,6 +59,11 @@ chart-lint: ## Lint the Helm chart
 chart-template: ## Render the Helm chart with a placeholder token
 	helm template karpenter charts/karpenter --set spot.refreshToken=placeholder
 
+.PHONY: update-pricing
+update-pricing: ## Refresh the embedded percentile snapshot from the S3 feed
+	curl -fsSL 'https://ngpc-prod-public-data.s3.us-east-2.amazonaws.com/percentiles.json' \
+		-o pkg/providers/pricing/initial-prices.json
+
 $(CONTROLLER_GEN): | $(TOOLS_DIR)
 	GOBIN=$(TOOLS_DIR) $(GO) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 

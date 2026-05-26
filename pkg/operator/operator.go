@@ -59,11 +59,12 @@ func NewOperator(ctx context.Context, coreOp *karpoperator.Operator) (context.Co
 	}
 	logger.Info("authenticated to Rackspace Spot")
 
+	pricingProvider := pricing.NewProvider()
 	return ctx, &Operator{
 		Operator:             coreOp,
 		SpotClient:           client,
-		InstanceProvider:     instance.NewProvider(client),
+		InstanceProvider:     instance.NewProvider(client, pricingProvider),
 		InstanceTypeProvider: instancetype.NewProvider(client),
-		PricingProvider:      pricing.NewProvider(),
+		PricingProvider:      pricingProvider,
 	}
 }

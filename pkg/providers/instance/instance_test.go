@@ -13,7 +13,6 @@ package instance
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	rxtspot "github.com/rackspace-spot/spot-go-sdk/api/v1"
@@ -27,7 +26,19 @@ import (
 	"sigs.k8s.io/karpenter/pkg/scheduling"
 
 	apiv1 "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/apis/v1"
+	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/pricing"
 )
+
+// stubPricing always errors on Percentiles, which exercises the
+// market*1.2 fallback path in chooseBidPrice.
+type stubPricing struct{}
+
+func (*stubPricing) SpotPrice(*rxtspot.ServerClass) float64                                    { return 0 }
+func (*stubPricing) OnDemandPrice(*rxtspot.ServerClass) float64                                { return 0 }
+func (*stubPricing) MinBidPrice(*rxtspot.ServerClass) float64                                  { return 0 }
+func (*stubPricing) Percentiles(context.Context, string, string) (pricing.Percentiles, error) {
+	return pricing.Percentiles{}, errors.New("stub: no feed")
+}
 
 const (
 	testOrgID      = "rxt-org-1"
@@ -66,12 +77,11 @@ func newClaim(uid, capacityType string) *karpv1.NodeClaim {
 	return nc
 }
 
-func newNodeClass(bidPrice string, extraLabels map[string]string) *apiv1.RackspaceSpotNodeClass {
+func newNodeClass(extraLabels map[string]string) *apiv1.RackspaceSpotNodeClass {
 	return &apiv1.RackspaceSpotNodeClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "default"},
 		Spec: apiv1.RackspaceSpotNodeClassSpec{
 			CloudspaceName: testCloudspace,
-			BidPrice:       bidPrice,
 			Labels:         extraLabels,
 		},
 	}
@@ -137,7 +147,7 @@ func TestDeriveCapacityType_DefaultsToOnDemand(t *testing.T) {
 func TestCreateSpot_HappyPath(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
-	p := NewProvider(api)
+	p := NewProvider(api, &stubPricing{})
 
 	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
 		Return([]rxtspot.Organization{{ID: testOrgID, Name: "test"}}, nil)
@@ -159,7 +169,7 @@ func TestCreateSpot_HappyPath(t *testing.T) {
 		})
 
 	nc := newClaim("uid-1", karpv1.CapacityTypeSpot)
-	nodeClass := newNodeClass("0.05", map[string]string{"team": "platform"})
+	nodeClass := newNodeClass(map[string]string{"team": "platform"})
 
 	pool, err := p.Create(context.Background(), nodeClass, nc, newInstanceTypes())
 	if err != nil {
@@ -171,7 +181,7 @@ func TestCreateSpot_HappyPath(t *testing.T) {
 	if pool.ProviderID != MakeProviderID(testCloudspace, PoolTypeSpot, PoolName(nc)) {
 		t.Errorf("unexpected providerID %q", pool.ProviderID)
 	}
-	// Market (0.001) * 1.2 = 0.001200; NodeClass ceiling 0.05 doesn't clamp.
+	// Market (0.001) * 1.2 = 0.001200; always-bid-market-plus-headroom.
 	if captured.BidPrice != "0.001200" {
 		t.Errorf("BidPrice = %q, want 0.001200", captured.BidPrice)
 	}
@@ -189,52 +199,29 @@ func TestCreateSpot_HappyPath(t *testing.T) {
 	}
 }
 
-func TestCreateSpot_RejectsWhenCeilingBelowMarket(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	api := newAPI(ctrl)
-	p := NewProvider(api)
-
-	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
-		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
-	// No CreateSpotNodePool call expected.
-
-	// market price in newInstanceTypes() is 0.001; ceiling at 0.0005 is below it.
-	_, err := p.Create(context.Background(),
-		newNodeClass("0.0005", nil),
-		newClaim("uid-2", karpv1.CapacityTypeSpot),
-		newInstanceTypes(),
-	)
-	if err == nil || !strings.Contains(err.Error(), "exceeds NodeClass bidPrice ceiling") {
-		t.Fatalf("expected market-exceeds-ceiling error, got %v", err)
+func TestChooseBidPrice_MarketPlusHeadroomFallback(t *testing.T) {
+	p := NewProvider(newAPI(gomock.NewController(t)), &stubPricing{})
+	got, err := p.chooseBidPrice(context.Background(), newInstanceTypes()[0])
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != "0.001200" {
+		t.Errorf("chooseBidPrice (fallback) = %q, want 0.001200 (market 0.001 * 1.2)", got)
 	}
 }
 
-func TestChooseBidPrice_DynamicAndCeilingClamp(t *testing.T) {
-	its := newInstanceTypes()
-	cases := []struct {
-		name, ceiling, want string
-	}{
-		{"no-ceiling-uses-market-x1.2", "", "0.001200"},
-		{"ceiling-above-market-clamps", "0.005", "0.001200"},
-		{"ceiling-at-market-clamps-to-ceiling", "0.001000", "0.001000"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := chooseBidPrice(its[0], tc.ceiling)
-			if err != nil {
-				t.Fatalf("unexpected err: %v", err)
-			}
-			if got != tc.want {
-				t.Errorf("chooseBidPrice(ceiling=%q) = %q, want %q", tc.ceiling, got, tc.want)
-			}
-		})
+func TestChooseBidPrice_NoSpotOffering(t *testing.T) {
+	p := NewProvider(newAPI(gomock.NewController(t)), &stubPricing{})
+	it := &karpcloudprovider.InstanceType{Name: testServerCls} // no offerings
+	if _, err := p.chooseBidPrice(context.Background(), it); err == nil {
+		t.Error("expected error when no spot offering, got nil")
 	}
 }
 
 func TestCreateOnDemand_HappyPath(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
-	p := NewProvider(api)
+	p := NewProvider(api, &stubPricing{})
 
 	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
 		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
@@ -251,7 +238,7 @@ func TestCreateOnDemand_HappyPath(t *testing.T) {
 		}, nil)
 
 	pool, err := p.Create(context.Background(),
-		newNodeClass("", nil),
+		newNodeClass(nil),
 		newClaim("uid-3", karpv1.CapacityTypeOnDemand),
 		newInstanceTypes(),
 	)
@@ -266,7 +253,7 @@ func TestCreateOnDemand_HappyPath(t *testing.T) {
 func TestCreate_IdempotentOnAlreadyExists(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
-	p := NewProvider(api)
+	p := NewProvider(api, &stubPricing{})
 
 	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
 		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
@@ -278,7 +265,7 @@ func TestCreate_IdempotentOnAlreadyExists(t *testing.T) {
 		Return(&rxtspot.SpotNodePool{Name: PoolName(newClaim("uid-4", "")), BidPrice: "0.05"}, nil)
 
 	_, err := p.Create(context.Background(),
-		newNodeClass("0.05", nil),
+		newNodeClass(nil),
 		newClaim("uid-4", karpv1.CapacityTypeSpot),
 		newInstanceTypes(),
 	)
@@ -290,7 +277,7 @@ func TestCreate_IdempotentOnAlreadyExists(t *testing.T) {
 func TestDelete_NotFoundMapsToErrPoolNotFound(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
-	p := NewProvider(api)
+	p := NewProvider(api, &stubPricing{})
 
 	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
 		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
@@ -307,7 +294,7 @@ func TestDelete_NotFoundMapsToErrPoolNotFound(t *testing.T) {
 func TestList_FiltersForeignPools(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
-	p := NewProvider(api)
+	p := NewProvider(api, &stubPricing{})
 
 	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
 		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
