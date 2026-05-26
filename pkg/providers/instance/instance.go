@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	apiv1 "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/apis/v1"
+	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/instancetype"
 	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/pricing"
 )
 
@@ -86,17 +87,18 @@ type API interface {
 }
 
 type DefaultProvider struct {
-	spot     rxtspot.SpotNodePoolAPI
-	onDemand rxtspot.OnDemandNodePoolAPI
-	orgs     rxtspot.OrganizationAPI
-	pricing  pricing.Provider
+	spot         rxtspot.SpotNodePoolAPI
+	onDemand     rxtspot.OnDemandNodePoolAPI
+	orgs         rxtspot.OrganizationAPI
+	pricing      pricing.Provider
+	instanceType instancetype.Provider
 
 	orgMu sync.Mutex
 	org   string
 }
 
-func NewProvider(api API, pricingProvider pricing.Provider) *DefaultProvider {
-	return &DefaultProvider{spot: api, onDemand: api, orgs: api, pricing: pricingProvider}
+func NewProvider(api API, pricingProvider pricing.Provider, instanceTypeProvider instancetype.Provider) *DefaultProvider {
+	return &DefaultProvider{spot: api, onDemand: api, orgs: api, pricing: pricingProvider, instanceType: instanceTypeProvider}
 }
 
 func (p *DefaultProvider) Create(ctx context.Context, nodeClass *apiv1.RackspaceSpotNodeClass, nodeClaim *karpv1.NodeClaim, instanceTypes []*karpcloudprovider.InstanceType) (*Pool, error) {
@@ -317,6 +319,16 @@ func (p *DefaultProvider) chooseBidPrice(ctx context.Context, nodeClass *apiv1.R
 			target = pivot * 1.05
 		} else {
 			log.FromContext(ctx).V(1).Info("percentile lookup failed, falling back to market*1.2", "err", err.Error(), "instanceType", instanceType.Name)
+		}
+	}
+
+	// Rackspace enforces a per-ServerClass bid FLOOR via MinBidPricePerHour.
+	// If our market+percentile computation falls below it, the admission
+	// webhook rejects with "BidPrice must be greater than or equal to the
+	// minimum bid price of X". Clamp up.
+	if region != "" && p.instanceType != nil {
+		if minBid, err := p.instanceType.MinBidPrice(ctx, region, instanceType.Name); err == nil && target < minBid {
+			target = minBid
 		}
 	}
 	return strconv.FormatFloat(roundBidUp(target), 'f', -1, 64), nil

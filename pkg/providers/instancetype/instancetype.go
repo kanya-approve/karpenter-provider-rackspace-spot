@@ -37,6 +37,10 @@ const (
 type Provider interface {
 	List(ctx context.Context, region string) ([]*karpcloudprovider.InstanceType, error)
 	Get(ctx context.Context, region, name string) (*karpcloudprovider.InstanceType, error)
+	// MinBidPrice returns the ServerClass-specific bid floor Rackspace's
+	// admission webhook enforces. Pulled from the cached SDK ServerClass
+	// (MinBidPricePerHour), not the percentile feed (which doesn't carry it).
+	MinBidPrice(ctx context.Context, region, name string) (float64, error)
 }
 
 type DefaultProvider struct {
@@ -80,6 +84,18 @@ func (p *DefaultProvider) Get(ctx context.Context, region, name string) (*karpcl
 		return nil, fmt.Errorf("server class %q not found in region %q", name, region)
 	}
 	return translate(sc), nil
+}
+
+func (p *DefaultProvider) MinBidPrice(ctx context.Context, region, name string) (float64, error) {
+	classes, err := p.classes(ctx, region)
+	if err != nil {
+		return 0, err
+	}
+	sc, found := lo.Find(classes, func(s rxtspot.ServerClass) bool { return s.Name == name })
+	if !found {
+		return 0, fmt.Errorf("server class %q not found in region %q", name, region)
+	}
+	return parsePrice(sc.MinBidPricePerHour), nil
 }
 
 func (p *DefaultProvider) classes(ctx context.Context, region string) ([]rxtspot.ServerClass, error) {

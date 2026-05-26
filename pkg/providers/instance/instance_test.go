@@ -40,6 +40,22 @@ func (*stubPricing) Percentiles(context.Context, string, string) (pricing.Percen
 	return pricing.Percentiles{}, errors.New("stub: no feed")
 }
 
+// stubInstanceType returns ErrNotFound for MinBidPrice so chooseBidPrice
+// falls through without clamping. List/Get aren't called in instance tests.
+type stubInstanceType struct{}
+
+func (*stubInstanceType) List(context.Context, string) ([]*karpcloudprovider.InstanceType, error) {
+	return nil, nil
+}
+
+func (*stubInstanceType) Get(context.Context, string, string) (*karpcloudprovider.InstanceType, error) {
+	return nil, errors.New("stub")
+}
+
+func (*stubInstanceType) MinBidPrice(context.Context, string, string) (float64, error) {
+	return 0, errors.New("stub: no min bid")
+}
+
 const (
 	testOrgID      = "rxt-org-1"
 	testCloudspace = "my-cs"
@@ -147,7 +163,7 @@ func TestDeriveCapacityType_DefaultsToOnDemand(t *testing.T) {
 func TestCreateSpot_HappyPath(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
-	p := NewProvider(api, &stubPricing{})
+	p := NewProvider(api, &stubPricing{}, &stubInstanceType{})
 
 	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
 		Return([]rxtspot.Organization{{ID: testOrgID, Name: "test"}}, nil)
@@ -201,7 +217,7 @@ func TestCreateSpot_HappyPath(t *testing.T) {
 }
 
 func TestChooseBidPrice_MarketPlusHeadroomFallback(t *testing.T) {
-	p := NewProvider(newAPI(gomock.NewController(t)), &stubPricing{})
+	p := NewProvider(newAPI(gomock.NewController(t)), &stubPricing{}, &stubInstanceType{})
 	got, err := p.chooseBidPrice(context.Background(), newNodeClass(nil), newInstanceTypes()[0])
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -212,7 +228,7 @@ func TestChooseBidPrice_MarketPlusHeadroomFallback(t *testing.T) {
 }
 
 func TestChooseBidPrice_NoSpotOffering(t *testing.T) {
-	p := NewProvider(newAPI(gomock.NewController(t)), &stubPricing{})
+	p := NewProvider(newAPI(gomock.NewController(t)), &stubPricing{}, &stubInstanceType{})
 	it := &karpcloudprovider.InstanceType{Name: testServerCls} // no offerings
 	if _, err := p.chooseBidPrice(context.Background(), newNodeClass(nil), it); err == nil {
 		t.Error("expected error when no spot offering, got nil")
@@ -222,7 +238,7 @@ func TestChooseBidPrice_NoSpotOffering(t *testing.T) {
 func TestCreateOnDemand_HappyPath(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
-	p := NewProvider(api, &stubPricing{})
+	p := NewProvider(api, &stubPricing{}, &stubInstanceType{})
 
 	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
 		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
@@ -254,7 +270,7 @@ func TestCreateOnDemand_HappyPath(t *testing.T) {
 func TestCreate_IdempotentOnAlreadyExists(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
-	p := NewProvider(api, &stubPricing{})
+	p := NewProvider(api, &stubPricing{}, &stubInstanceType{})
 
 	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
 		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
@@ -278,7 +294,7 @@ func TestCreate_IdempotentOnAlreadyExists(t *testing.T) {
 func TestDelete_NotFoundMapsToErrPoolNotFound(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
-	p := NewProvider(api, &stubPricing{})
+	p := NewProvider(api, &stubPricing{}, &stubInstanceType{})
 
 	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
 		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
@@ -295,7 +311,7 @@ func TestDelete_NotFoundMapsToErrPoolNotFound(t *testing.T) {
 func TestList_FiltersForeignPools(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
-	p := NewProvider(api, &stubPricing{})
+	p := NewProvider(api, &stubPricing{}, &stubInstanceType{})
 
 	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
 		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
