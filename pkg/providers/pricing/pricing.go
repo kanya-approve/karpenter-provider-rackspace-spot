@@ -80,15 +80,15 @@ func NewProvider() *DefaultProvider {
 	}
 }
 
-func (DefaultProvider) SpotPrice(sc *rxtspot.ServerClass) float64 {
+func (*DefaultProvider) SpotPrice(sc *rxtspot.ServerClass) float64 {
 	return parse(sc.CurrentMarketPricePerHour)
 }
 
-func (DefaultProvider) OnDemandPrice(sc *rxtspot.ServerClass) float64 {
+func (*DefaultProvider) OnDemandPrice(sc *rxtspot.ServerClass) float64 {
 	return parse(sc.OnDemandPricePerHour)
 }
 
-func (DefaultProvider) MinBidPrice(sc *rxtspot.ServerClass) float64 {
+func (*DefaultProvider) MinBidPrice(sc *rxtspot.ServerClass) float64 {
 	return parse(sc.MinBidPricePerHour)
 }
 
