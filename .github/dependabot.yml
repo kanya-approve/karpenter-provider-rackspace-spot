@@ -1,0 +1,47 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    groups:
+      # Karpenter pins specific versions of k8s.io/* and controller-runtime.
+      # Group those together so MVS stays consistent and we don't churn
+      # one-at-a-time.
+      k8s-deps:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+        exclude-patterns:
+          - "sigs.k8s.io/karpenter"
+      # Karpenter on its own — major bumps may require code changes.
+      karpenter:
+        patterns:
+          - "sigs.k8s.io/karpenter"
+      # Everything else in one PR.
+      go-deps:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
