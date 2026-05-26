@@ -1,0 +1,54 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/kanya-approve/karpenter-provider-rackspace-spot
+  tag: ""             # defaults to .Chart.AppVersion when empty
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""            # defaults to the fullname when empty
+
+# Rackspace Spot credentials. You can either:
+#   (a) inline the refresh token via spot.refreshToken (a Secret is rendered)
+#   (b) reference an existing Secret you created out of band
+spot:
+  # Inline path: supply a refresh token; the chart will render a Secret.
+  refreshToken: ""
+  # External path: name of an existing Secret with a key SPOT_REFRESH_TOKEN.
+  existingSecret: ""
+
+  # Optional overrides for the spot-go-sdk Config.
+  # Leave blank to use SDK defaults (spot.rackspace.com / login.spot.rackspace.com).
+  baseURL: ""
+  oauthURL: ""
+
+extraEnv: []
+
+resources:
+  limits:
+    cpu: 1
+    memory: 1Gi
+  requests:
+    cpu: 200m
+    memory: 256Mi
+
+podAnnotations: {}
+podLabels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Karpenter core operator options that the provider's main passes through
+# (memory limit, leader election toggles, etc.). Empty by default — accept
+# operator defaults.
+operator:
+  metricsPort: 8080
+  healthProbePort: 8081
+  disableLeaderElection: false

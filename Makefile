@@ -34,10 +34,26 @@ tidy: ## go mod tidy
 	$(GO) mod tidy
 
 .PHONY: generate
-generate: $(CONTROLLER_GEN) ## Generate CRDs, deepcopy, and RBAC
+generate: $(CONTROLLER_GEN) ## Generate CRDs, deepcopy; sync CRD into chart
 	$(CONTROLLER_GEN) object:headerFile=hack/boilerplate.go.txt paths="./pkg/apis/..."
 	$(CONTROLLER_GEN) crd paths="./pkg/apis/..." output:crd:artifacts:config=config/crd
-	$(CONTROLLER_GEN) rbac:roleName=karpenter paths="./pkg/..." output:rbac:artifacts:config=config/rbac
+	mkdir -p charts/karpenter/crds
+	cp config/crd/*.yaml charts/karpenter/crds/
+
+IMAGE ?= ghcr.io/kanya-approve/karpenter-provider-rackspace-spot
+TAG   ?= dev
+
+.PHONY: docker
+docker: ## Build the container image
+	docker build --build-arg VERSION=$(TAG) -t $(IMAGE):$(TAG) .
+
+.PHONY: chart-lint
+chart-lint: ## Lint the Helm chart
+	helm lint charts/karpenter
+
+.PHONY: chart-template
+chart-template: ## Render the Helm chart with a placeholder token
+	helm template karpenter charts/karpenter --set spot.refreshToken=placeholder
 
 $(CONTROLLER_GEN): | $(TOOLS_DIR)
 	GOBIN=$(TOOLS_DIR) $(GO) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
