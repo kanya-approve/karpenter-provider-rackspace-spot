@@ -26,14 +26,15 @@ import (
 )
 
 const (
-	// Scheme is the providerID scheme this provider emits and parses.
 	Scheme = "rackspacespot"
-	// PoolNamePrefix is prepended to NodeClaim UIDs to form pool names.
-	PoolNamePrefix = "karpenter-"
 
 	PoolTypeSpot     = "spot"
 	PoolTypeOnDemand = "ondemand"
 
+	// KarpenterManagedLabel is set on every pool we create; List() filters
+	// foreign pools out by this label. Rackspace's admission webhook
+	// requires pool names to be a bare lowercase UUID, so we can't use a
+	// name prefix to mark ours.
 	KarpenterManagedLabel = "karpenter.rackspace.com/managed"
 	NodeClaimNameLabel    = "karpenter.rackspace.com/nodeclaim-name"
 	NodeClaimUIDLabel     = "karpenter.rackspace.com/nodeclaim-uid"
@@ -231,13 +232,13 @@ func (p *DefaultProvider) List(ctx context.Context, cloudspace string) ([]*Pool,
 
 	pools := make([]*Pool, 0, len(spots)+len(ods))
 	for _, sp := range spots {
-		if !strings.HasPrefix(sp.Name, PoolNamePrefix) {
+		if sp.CustomLabels[KarpenterManagedLabel] != "true" {
 			continue
 		}
 		pools = append(pools, spotToPool(sp, cloudspace))
 	}
 	for _, od := range ods {
-		if !strings.HasPrefix(od.Name, PoolNamePrefix) {
+		if od.CustomLabels[KarpenterManagedLabel] != "true" {
 			continue
 		}
 		pools = append(pools, onDemandToPool(od, cloudspace))
@@ -267,8 +268,12 @@ func (p *DefaultProvider) organization(ctx context.Context) (string, error) {
 }
 
 // PoolName returns the deterministic Rackspace pool name for a NodeClaim.
+// PoolName returns the NodeClaim's UID verbatim. Rackspace's admission
+// webhook requires every SpotNodePool / OnDemandNodePool name to be a
+// lowercase UUID; k8s NodeClaim UIDs already satisfy that, so we use them
+// as-is.
 func PoolName(nc *karpv1.NodeClaim) string {
-	return PoolNamePrefix + string(nc.UID)
+	return string(nc.UID)
 }
 
 // deriveCapacityType picks one capacity type from the NodeClaim's

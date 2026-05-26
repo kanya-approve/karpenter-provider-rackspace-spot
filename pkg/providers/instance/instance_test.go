@@ -117,7 +117,7 @@ func TestParseProviderID_Rejects(t *testing.T) {
 
 func TestPoolNameIsDeterministic(t *testing.T) {
 	nc := newClaim("abc-123", "")
-	if got, want := PoolName(nc), PoolNamePrefix+"abc-123"; got != want {
+	if got, want := PoolName(nc), "abc-123"; got != want {
 		t.Errorf("PoolName = %q, want %q", got, want)
 	}
 }
@@ -281,16 +281,17 @@ func TestList_FiltersForeignPools(t *testing.T) {
 
 	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
 		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
+	karpLabel := map[string]string{KarpenterManagedLabel: "true"}
 	api.MockSpotNodePoolAPI.EXPECT().
 		ListSpotNodePools(gomock.Any(), testOrgID, testCloudspace).
 		Return([]*rxtspot.SpotNodePool{
-			{Name: "karpenter-uid-a", Cloudspace: testCloudspace, ServerClass: testServerCls},
+			{Name: "a-karpenter-pool", Cloudspace: testCloudspace, ServerClass: testServerCls, CustomLabels: karpLabel},
 			{Name: "manually-managed", Cloudspace: testCloudspace, ServerClass: testServerCls},
 		}, nil)
 	api.MockOnDemandNodePoolAPI.EXPECT().
 		ListOnDemandNodePools(gomock.Any(), testOrgID, testCloudspace).
 		Return([]*rxtspot.OnDemandNodePool{
-			{Name: "karpenter-uid-b", Cloudspace: testCloudspace, ServerClass: testServerCls},
+			{Name: "b-karpenter-pool", Cloudspace: testCloudspace, ServerClass: testServerCls, CustomLabels: karpLabel},
 		}, nil)
 
 	pools, err := p.List(context.Background(), testCloudspace)
@@ -301,7 +302,7 @@ func TestList_FiltersForeignPools(t *testing.T) {
 		t.Fatalf("expected 2 karpenter-managed pools, got %d", len(pools))
 	}
 	for _, pool := range pools {
-		if !strings.HasPrefix(pool.Name, PoolNamePrefix) {
+		if pool.Labels[KarpenterManagedLabel] != "true" {
 			t.Errorf("List returned a foreign pool %q", pool.Name)
 		}
 	}
