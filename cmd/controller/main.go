@@ -11,6 +11,7 @@ You may obtain a copy of the License at
 package main
 
 import (
+	opcontroller "github.com/awslabs/operatorpkg/controller"
 	karpcloudprovider "sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider/overlay"
 	"sigs.k8s.io/karpenter/pkg/controllers"
@@ -18,6 +19,7 @@ import (
 	karpoperator "sigs.k8s.io/karpenter/pkg/operator"
 
 	rscloudprovider "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/cloudprovider"
+	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/controllers/nodeclass"
 	rsoperator "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/operator"
 )
 
@@ -29,17 +31,24 @@ func main() {
 	cp := overlay.Decorate(raw, op.GetClient(), op.InstanceTypeStore)
 	clusterState := state.NewCluster(op.Clock, op.GetClient(), cp)
 
+	providerControllers := []opcontroller.Controller{
+		nodeclass.NewController(op.GetClient(), op.SpotClient, op.InstanceProvider, op.InstanceTypeProvider),
+	}
+
 	op.
-		WithControllers(ctx, controllers.NewControllers(
-			ctx,
-			op.Manager,
-			op.Clock,
-			op.GetClient(),
-			op.EventRecorder,
-			cp,
-			raw,
-			clusterState,
-			op.InstanceTypeStore,
+		WithControllers(ctx, append(
+			controllers.NewControllers(
+				ctx,
+				op.Manager,
+				op.Clock,
+				op.GetClient(),
+				op.EventRecorder,
+				cp,
+				raw,
+				clusterState,
+				op.InstanceTypeStore,
+			),
+			providerControllers...,
 		)...).
 		Start(ctx)
 }
