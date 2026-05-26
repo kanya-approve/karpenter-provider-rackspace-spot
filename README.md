@@ -4,12 +4,14 @@ A Karpenter cloud provider for [Rackspace Spot](https://spot.rackspace.com) — 
 
 ## Status
 
-MVP — driven end-to-end on a real Cloudspace. Works:
+Pre-alpha. The Karpenter-side flow works end-to-end on a real Cloudspace:
 
 - Karpenter scheduler picks a Rackspace ServerClass; `Create()` mints a 1-replica `SpotNodePool` or `OnDemandNodePool` (1-pool-per-NodeClaim mapping); `Delete()` is idempotent
 - `RackspaceSpotNodeClass` CRD with reconciler that validates the referenced Cloudspace, caches its region, and refreshes the eligible ServerClass list
 - Helm chart ships the provider's CRD plus the upstream `karpenter.sh` CRDs
 - Multi-arch container image built with [ko](https://ko.build); snapshot `:main` + `:sha-<commit>` published on every push to `main`, versioned tags on release
+
+**Known gap before nodes can actually carry workloads:** Rackspace's managed cloud-controller sets `node.spec.providerID = openstack:///<vm-uuid>`, but our provider returns `rackspacespot://<cs>/<kind>/<nodeclaim-uid>`. Karpenter can't link the joining Node back to the NodeClaim, so the NodeClaim never reaches `Ready` and Karpenter eventually disrupts it. The Node also lacks well-known labels (`karpenter.sh/nodepool`, `karpenter.sh/capacity-type`, `node.kubernetes.io/instance-type` → set by Rackspace's CCM to its internal VM SKU, not the ServerClass). Both need a post-registration reconciler — tracked separately.
 
 Deferred — tracked as GitHub issues:
 
@@ -22,10 +24,19 @@ Deferred — tracked as GitHub issues:
 
 ## Install
 
+No tagged release has been cut yet, so OCI install pulls a snapshot version. List what's published:
+
+```sh
+gh api /users/kanya-approve/packages/container/charts%2Fkarpenter-provider-rackspace-spot/versions \
+  | jq -r '.[].metadata.container.tags[]'
+```
+
+Then install:
+
 ```sh
 helm install karpenter \
   oci://ghcr.io/kanya-approve/charts/karpenter-provider-rackspace-spot \
-  --version 0.1.0 \
+  --version 0.1.0-main.<short-sha> \
   --namespace karpenter --create-namespace \
   --set spot.refreshToken="$(awk '/refreshToken:/{print $2}' ~/.spot_config)"
 ```
@@ -38,6 +49,8 @@ helm install karpenter charts/karpenter \
   --set image.tag=main \
   --set spot.refreshToken="$RXTSPOT_REFRESH_TOKEN"
 ```
+
+Snapshot images (`:main`, `:sha-<commit>`) ship on every push to `main`; snapshot charts (`<chart-version>-main.<short-sha>`) ship only when `charts/**` changes. Once `git tag v0.1.0 && git push --tags` lands, the release workflow publishes a plain `0.1.0` image + chart.
 
 The chart's `crds/` ships both the provider's `RackspaceSpotNodeClass` CRD and the upstream `karpenter.sh/v1` `NodePool` + `NodeClaim` CRDs.
 
