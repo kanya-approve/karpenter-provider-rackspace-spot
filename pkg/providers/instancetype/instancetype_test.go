@@ -15,6 +15,7 @@ import (
 
 	rxtspot "github.com/rackspace-spot/spot-go-sdk/api/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 )
 
@@ -100,5 +101,38 @@ func TestTranslate_ZeroPriceDropsOffering(t *testing.T) {
 	got := it.Offerings[0].Requirements.Get(karpv1.CapacityTypeLabelKey).Any()
 	if got != karpv1.CapacityTypeOnDemand {
 		t.Errorf("expected on-demand offering, got %q", got)
+	}
+}
+
+func TestParsePrice_StripsDollarPrefix(t *testing.T) {
+	cases := map[string]float64{
+		"$0.001000": 0.001,
+		"$0.035":    0.035,
+		"  $1.234 ": 1.234,
+		"":          0,
+		"$":         0,
+		"garbage":   0,
+		"0.5":       0.5,
+	}
+	for in, want := range cases {
+		if got := parsePrice(in); got != want {
+			t.Errorf("parsePrice(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestParseQuantity_HandlesRackspaceUnits(t *testing.T) {
+	cases := map[string]string{
+		"3.75GB": "3.75Gi",
+		"60GB":   "60Gi",
+		"500MB":  "500Mi",
+		"2":      "2",
+	}
+	for in, want := range cases {
+		got := parseQuantity(in)
+		wantQ := resource.MustParse(want)
+		if got.Cmp(wantQ) != 0 {
+			t.Errorf("parseQuantity(%q) = %v, want %v", in, got.String(), want)
+		}
 	}
 }

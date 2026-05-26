@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -153,22 +154,37 @@ func translate(sc rxtspot.ServerClass) *karpcloudprovider.InstanceType {
 	}
 }
 
+// rackspaceUnitFix normalizes Rackspace's "<n>GB"/"<n>MB"/"<n>TB"/"<n>KB"
+// suffixes to k8s canonical Gi/Mi/Ti/Ki so resource.ParseQuantity accepts
+// them. Rackspace's API returns memory as e.g. "3.75GB" which K8s rejects.
+func rackspaceUnitFix(s string) string {
+	for _, suf := range []string{"GB", "MB", "TB", "KB", "PB", "EB"} {
+		if strings.HasSuffix(s, suf) {
+			return strings.TrimSuffix(s, suf) + suf[:1] + "i"
+		}
+	}
+	return s
+}
+
 func parseQuantity(s string) resource.Quantity {
 	if s == "" {
 		return resource.Quantity{}
 	}
-	q, err := resource.ParseQuantity(s)
+	q, err := resource.ParseQuantity(rackspaceUnitFix(s))
 	if err != nil {
 		return resource.Quantity{}
 	}
 	return q
 }
 
+// parsePrice handles Rackspace's "$0.001000"-style strings (currency prefix
+// + leading/trailing whitespace) and returns 0 when the value can't be parsed.
 func parsePrice(s string) float64 {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "$")
 	if s == "" {
 		return 0
 	}
-	v, err := strconv.ParseFloat(s, 64)
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 	if err != nil {
 		return 0
 	}

@@ -12,6 +12,7 @@ package pricing
 
 import (
 	"strconv"
+	"strings"
 
 	rxtspot "github.com/rackspace-spot/spot-go-sdk/api/v1"
 )
@@ -48,11 +49,14 @@ func (DefaultProvider) MinBidPrice(sc *rxtspot.ServerClass) float64 {
 	return parse(sc.MinBidPricePerHour)
 }
 
+// parse handles Rackspace's "$0.001000"-style strings (currency prefix +
+// leading/trailing whitespace) and returns 0 when the value can't be parsed.
 func parse(s string) float64 {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "$")
 	if s == "" {
 		return 0
 	}
-	v, err := strconv.ParseFloat(s, 64)
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 	if err != nil {
 		return 0
 	}
