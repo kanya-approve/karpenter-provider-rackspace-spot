@@ -20,6 +20,7 @@ import (
 
 	rscloudprovider "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/cloudprovider"
 	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/controllers/nodeclass"
+	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/controllers/nodelink"
 	rsoperator "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/operator"
 )
 
@@ -33,6 +34,7 @@ func main() {
 
 	providerControllers := []opcontroller.Controller{
 		nodeclass.NewController(op.GetClient(), op.SpotClient, op.InstanceProvider, op.InstanceTypeProvider),
+		nodelink.NewController(op.GetClient()),
 	}
 
 	op.
