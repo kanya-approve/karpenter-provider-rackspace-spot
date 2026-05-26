@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/awslabs/operatorpkg/status"
 	rxtspot "github.com/rackspace-spot/spot-go-sdk/api/v1"
@@ -98,10 +99,23 @@ func (c *CloudProvider) Create(ctx context.Context, nc *karpv1.NodeClaim) (*karp
 }
 
 func (c *CloudProvider) Delete(ctx context.Context, nc *karpv1.NodeClaim) error {
-	if nc.Status.ProviderID == "" {
-		return karpcloudprovider.NewNodeClaimNotFoundError(errors.New("nodeclaim has no provider ID"))
+	if nc.UID == "" {
+		return karpcloudprovider.NewNodeClaimNotFoundError(errors.New("nodeclaim has no UID"))
 	}
-	if err := c.instances.Delete(ctx, nc.Status.ProviderID); err != nil {
+	// Pool name is the NodeClaim UID. We don't rely on parsing Status.ProviderID
+	// because nodelink may have rewritten it to the Rackspace CCM's
+	// openstack:///<vm-uuid> form, which doesn't carry pool kind/name.
+	poolName := string(nc.UID)
+	capacityType := requirementValue(nc, karpv1.CapacityTypeLabelKey)
+	cloudspace, err := c.cloudspaceForClaim(ctx, nc)
+	if err != nil {
+		return err
+	}
+	kind := instance.PoolTypeSpot
+	if capacityType == karpv1.CapacityTypeOnDemand {
+		kind = instance.PoolTypeOnDemand
+	}
+	if err := c.instances.Delete(ctx, instance.MakeProviderID(cloudspace, kind, poolName)); err != nil {
 		if errors.Is(err, instance.ErrPoolNotFound) {
 			return karpcloudprovider.NewNodeClaimNotFoundError(err)
 		}
@@ -111,14 +125,49 @@ func (c *CloudProvider) Delete(ctx context.Context, nc *karpv1.NodeClaim) error 
 }
 
 func (c *CloudProvider) Get(ctx context.Context, providerID string) (*karpv1.NodeClaim, error) {
-	pool, err := c.instances.Get(ctx, providerID)
-	if err != nil {
-		if errors.Is(err, instance.ErrPoolNotFound) {
-			return nil, karpcloudprovider.NewNodeClaimNotFoundError(err)
+	// Synthetic scheme path — directly resolvable via pool API.
+	if strings.HasPrefix(providerID, instance.Scheme+"://") {
+		pool, err := c.instances.Get(ctx, providerID)
+		if err != nil {
+			if errors.Is(err, instance.ErrPoolNotFound) {
+				return nil, karpcloudprovider.NewNodeClaimNotFoundError(err)
+			}
+			return nil, err
 		}
-		return nil, err
+		return c.poolToClaim(ctx, pool), nil
 	}
-	return c.poolToClaim(ctx, pool), nil
+	// CCM-set scheme (openstack:///<uuid>): find the Node carrying that
+	// providerID + our managed label, then look up its pool.
+	var nodes corev1.NodeList
+	if err := c.kubeClient.List(ctx, &nodes, client.MatchingLabels{instance.KarpenterManagedLabel: "true"}); err != nil {
+		return nil, fmt.Errorf("listing managed nodes: %w", err)
+	}
+	for i := range nodes.Items {
+		if nodes.Items[i].Spec.ProviderID != providerID {
+			continue
+		}
+		nodeClaimUID := nodes.Items[i].Labels[instance.NodeClaimUIDLabel]
+		capacityType := nodes.Items[i].Labels[karpv1.CapacityTypeLabelKey]
+		cloudspace, err := c.cloudspaceForNode(ctx, &nodes.Items[i])
+		if err != nil {
+			return nil, err
+		}
+		kind := instance.PoolTypeSpot
+		if capacityType == karpv1.CapacityTypeOnDemand {
+			kind = instance.PoolTypeOnDemand
+		}
+		pool, err := c.instances.Get(ctx, instance.MakeProviderID(cloudspace, kind, nodeClaimUID))
+		if err != nil {
+			if errors.Is(err, instance.ErrPoolNotFound) {
+				return nil, karpcloudprovider.NewNodeClaimNotFoundError(err)
+			}
+			return nil, err
+		}
+		nc := c.poolToClaim(ctx, pool)
+		nc.Status.ProviderID = providerID // preserve the openstack-form expected by Karpenter
+		return nc, nil
+	}
+	return nil, karpcloudprovider.NewNodeClaimNotFoundError(errors.New("no managed Node with that providerID"))
 }
 
 func (c *CloudProvider) List(ctx context.Context) ([]*karpv1.NodeClaim, error) {
@@ -130,6 +179,21 @@ func (c *CloudProvider) List(ctx context.Context) ([]*karpv1.NodeClaim, error) {
 		return nc.Spec.CloudspaceName
 	}))
 
+	// Index managed Nodes by NodeClaim UID so we can substitute their
+	// CCM-set providerID into the NodeClaim we return — otherwise
+	// Karpenter's cluster-state sync compares our synthetic scheme to
+	// the rewritten Status.ProviderID and stalls.
+	var nodes corev1.NodeList
+	if err := c.kubeClient.List(ctx, &nodes, client.MatchingLabels{instance.KarpenterManagedLabel: "true"}); err != nil {
+		return nil, fmt.Errorf("listing managed nodes: %w", err)
+	}
+	nodeByUID := map[string]*corev1.Node{}
+	for i := range nodes.Items {
+		if uid := nodes.Items[i].Labels[instance.NodeClaimUIDLabel]; uid != "" {
+			nodeByUID[uid] = &nodes.Items[i]
+		}
+	}
+
 	var claims []*karpv1.NodeClaim
 	for _, cs := range cloudspaces {
 		if cs == "" {
@@ -140,10 +204,40 @@ func (c *CloudProvider) List(ctx context.Context) ([]*karpv1.NodeClaim, error) {
 			return nil, fmt.Errorf("listing pools in cloudspace %s: %w", cs, err)
 		}
 		for _, p := range pools {
-			claims = append(claims, c.poolToClaim(ctx, p))
+			nc := c.poolToClaim(ctx, p)
+			if node, ok := nodeByUID[p.Labels[instance.NodeClaimUIDLabel]]; ok && node.Spec.ProviderID != "" {
+				nc.Status.ProviderID = node.Spec.ProviderID
+			}
+			claims = append(claims, nc)
 		}
 	}
 	return claims, nil
+}
+
+// cloudspaceForClaim picks the Cloudspace name the NodeClaim was provisioned
+// into. The NodeClaim itself doesn't carry it, so resolve via NodeClassRef.
+func (c *CloudProvider) cloudspaceForClaim(ctx context.Context, nc *karpv1.NodeClaim) (string, error) {
+	nodeClass, err := c.resolveNodeClass(ctx, nc)
+	if err != nil {
+		return "", err
+	}
+	return nodeClass.Spec.CloudspaceName, nil
+}
+
+// cloudspaceForNode picks the Cloudspace by listing our NodeClasses and
+// finding one whose region matches the Node. Cheap fallback when we don't
+// have the NodeClaim handy.
+func (c *CloudProvider) cloudspaceForNode(ctx context.Context, _ *corev1.Node) (string, error) {
+	var classes apiv1.RackspaceSpotNodeClassList
+	if err := c.kubeClient.List(ctx, &classes); err != nil {
+		return "", fmt.Errorf("listing RackspaceSpotNodeClasses: %w", err)
+	}
+	for _, cl := range classes.Items {
+		if cl.Spec.CloudspaceName != "" {
+			return cl.Spec.CloudspaceName, nil // single-Cloudspace MVP — first wins
+		}
+	}
+	return "", errors.New("no RackspaceSpotNodeClass with a cloudspaceName")
 }
 
 func (c *CloudProvider) GetInstanceTypes(ctx context.Context, nodePool *karpv1.NodePool) ([]*karpcloudprovider.InstanceType, error) {
