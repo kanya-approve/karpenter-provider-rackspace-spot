@@ -9,7 +9,7 @@ GO          ?= go
 GOFLAGS     ?=
 LDFLAGS     ?= -s -w
 
-CONTROLLER_GEN_VERSION ?= v0.17.2
+CONTROLLER_GEN_VERSION ?= v0.21.0
 
 CONTROLLER_GEN := $(TOOLS_DIR)/controller-gen
 
