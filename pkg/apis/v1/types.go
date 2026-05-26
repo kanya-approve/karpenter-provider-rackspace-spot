@@ -11,6 +11,7 @@ You may obtain a copy of the License at
 package v1
 
 import (
+	"github.com/awslabs/operatorpkg/status"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -95,7 +96,7 @@ type RackspaceSpotNodeClassStatus struct {
 	// +optional
 	// +listType=map
 	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	Conditions []status.Condition `json:"conditions,omitempty"`
 
 	// ServerClasses lists the names of ServerClasses currently eligible for
 	// scheduling (post-selector filtering). Refreshed periodically.
