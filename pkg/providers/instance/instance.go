@@ -342,21 +342,24 @@ func onDemandToPool(od *rxtspot.OnDemandNodePool, cloudspace string) *Pool {
 }
 
 // mergeLabels builds the CustomLabels passed to Rackspace's pool API. These
-// flow through to kubelet --node-labels on the joining Node. We include the
-// well-known Karpenter labels (capacity-type, nodepool, instance-type,
-// topology zone/region) because Rackspace's managed kubelet otherwise sets
-// node.kubernetes.io/instance-type to its internal VM SKU (e.g. compute1-4)
-// rather than the ServerClass — which breaks Karpenter's bin-packing.
+// flow through to kubelet --node-labels on the joining Node.
+//
+// We deliberately do NOT set node.kubernetes.io/instance-type or
+// topology.kubernetes.io/region: Rackspace's OpenStack CCM owns those
+// post-registration (setting them to e.g. "compute1-4" / "HKG"), and the
+// pool API surfaces a "Custom Metadata conflicts" warning when we try.
+// karpenter.sh/* and karpenter.rackspace.com/* are untouched by the CCM,
+// so those are sufficient for Karpenter binding + our internal tracking.
+// topology.kubernetes.io/zone survives the CCM and is required by the
+// scheduler, so we keep it. See GH issue #9.
 func mergeLabels(nodeClass *apiv1.RackspaceSpotNodeClass, nc *karpv1.NodeClaim, instanceType *karpcloudprovider.InstanceType, capacityType string) map[string]string {
 	zone := instanceType.Requirements.Get(corev1.LabelTopologyZone).Any()
 	out := map[string]string{
-		KarpenterManagedLabel:          "true",
-		NodeClaimNameLabel:             nc.Name,
-		NodeClaimUIDLabel:              string(nc.UID),
-		karpv1.CapacityTypeLabelKey:    capacityType,
-		corev1.LabelInstanceTypeStable: instanceType.Name,
-		corev1.LabelTopologyZone:       zone,
-		corev1.LabelTopologyRegion:     zone,
+		KarpenterManagedLabel:       "true",
+		NodeClaimNameLabel:          nc.Name,
+		NodeClaimUIDLabel:           string(nc.UID),
+		karpv1.CapacityTypeLabelKey: capacityType,
+		corev1.LabelTopologyZone:    zone,
 	}
 	if np := nc.Labels[karpv1.NodePoolLabelKey]; np != "" {
 		out[karpv1.NodePoolLabelKey] = np
