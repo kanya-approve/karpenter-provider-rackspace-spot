@@ -1,0 +1,57 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "karpenter.fullname" . }}
+  labels:
+    {{- include "karpenter.labels" . | nindent 4 }}
+rules:
+  # NodeClass CRD owned by this provider.
+  - apiGroups: ["karpenter.rackspace.com"]
+    resources: ["rackspacespotnodeclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["karpenter.rackspace.com"]
+    resources: ["rackspacespotnodeclasses/status"]
+    verbs: ["patch", "update"]
+
+  # Karpenter core resources the provider reads / writes.
+  - apiGroups: ["karpenter.sh"]
+    resources: ["nodepools", "nodeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["karpenter.sh"]
+    resources: ["nodepools/status", "nodeclaims/status"]
+    verbs: ["patch", "update"]
+
+  # Standard cluster state the Karpenter core controllers need.
+  - apiGroups: [""]
+    resources: ["nodes", "pods", "events", "namespaces"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["csinodes", "csidrivers", "csistoragecapacities", "storageclasses", "volumeattachments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets", "deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "karpenter.fullname" . }}
+  labels:
+    {{- include "karpenter.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "karpenter.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "karpenter.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
