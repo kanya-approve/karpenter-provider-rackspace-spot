@@ -119,7 +119,7 @@ func (p *DefaultProvider) Create(ctx context.Context, nodeClass *apiv1.Rackspace
 
 	switch capacityType {
 	case karpv1.CapacityTypeSpot:
-		bid, err := p.chooseBidPrice(ctx, instanceType)
+		bid, err := p.chooseBidPrice(ctx, nodeClass, instanceType)
 		if err != nil {
 			return nil, fmt.Errorf("choosing bid for spot pool %s: %w", name, err)
 		}
@@ -284,17 +284,17 @@ func PoolName(nc *karpv1.NodeClaim) string {
 
 // chooseBidPrice computes the bid we send to Rackspace at pool-create time.
 //
-// Strategy: bid max(market, P80) * 1.05.
+// Strategy: bid max(market, percentile_from_NodeClass) * 1.05.
 //   - market clears Rackspace's "bid >= current market" admission check.
-//   - P80 is the 80th-percentile spot price over the rolling window in
-//     Rackspace's published percentile feed — bidding at-or-above P80 means
-//     we hold the node through ~80% of typical price ticks rather than
-//     getting reclaimed on the next minor spike.
+//   - percentile_from_NodeClass is one of P20/P50/P80 (default P80) from
+//     Rackspace's published 30-day price distribution; bidding at-or-above
+//     that level means we hold the node through that fraction of typical
+//     price ticks rather than getting reclaimed.
 //   - * 1.05 adds a small buffer for intra-tick movement.
 //
 // Falls back to market * 1.2 if the percentile feed lookup fails for any
 // reason (cold start before first live fetch, region/SC missing, etc.).
-func (p *DefaultProvider) chooseBidPrice(ctx context.Context, instanceType *karpcloudprovider.InstanceType) (string, error) {
+func (p *DefaultProvider) chooseBidPrice(ctx context.Context, nodeClass *apiv1.RackspaceSpotNodeClass, instanceType *karpcloudprovider.InstanceType) (string, error) {
 	var marketPrice float64
 	for _, off := range instanceType.Offerings {
 		if off.Requirements.Get(karpv1.CapacityTypeLabelKey).Any() == karpv1.CapacityTypeSpot {
@@ -311,8 +311,8 @@ func (p *DefaultProvider) chooseBidPrice(ctx context.Context, instanceType *karp
 	if region != "" && p.pricing != nil {
 		if pct, err := p.pricing.Percentiles(ctx, region, instanceType.Name); err == nil {
 			pivot := marketPrice
-			if pct.P80 > pivot {
-				pivot = pct.P80
+			if chosen := selectPercentile(nodeClass.Spec.BidPercentile, pct); chosen > pivot {
+				pivot = chosen
 			}
 			target = pivot * 1.05
 		} else {
@@ -320,6 +320,22 @@ func (p *DefaultProvider) chooseBidPrice(ctx context.Context, instanceType *karp
 		}
 	}
 	return strconv.FormatFloat(roundBidUp(target), 'f', -1, 64), nil
+}
+
+// selectPercentile picks one of the published percentile values per the
+// NodeClass's BidPercentile field. Empty (or unrecognized) defaults to P80,
+// matching the CRD default.
+func selectPercentile(choice string, p pricing.Percentiles) float64 {
+	switch choice {
+	case "P20":
+		return p.P20
+	case "P50":
+		return p.P50
+	case "", "P80":
+		return p.P80
+	default:
+		return p.P80
+	}
 }
 
 // roundBidUp honors Rackspace's admission validation:

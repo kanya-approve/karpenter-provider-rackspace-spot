@@ -66,6 +66,19 @@ spec:
                   Annotations are propagated to the underlying Rackspace pool's
                   CustomAnnotations.
                 type: object
+              bidPercentile:
+                default: P80
+                description: |-
+                  BidPercentile picks which percentile of Rackspace's published 30-day
+                  price distribution the controller bids at for spot pools. Lower
+                  percentiles mean cheaper bids and more frequent preemptions during
+                  volatile periods; higher percentiles hold through more price ticks.
+                  The actual bid is max(current_market, percentile_value) * 1.05.
+                enum:
+                - P20
+                - P50
+                - P80
+                type: string
               cloudspaceName:
                 description: |-
                   CloudspaceName is the Rackspace Spot Cloudspace into which pools are

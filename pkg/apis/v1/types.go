@@ -61,6 +61,17 @@ type RackspaceSpotNodeClassSpec struct {
 	// +optional
 	ServerClassSelector *metav1.LabelSelector `json:"serverClassSelector,omitempty"`
 
+	// BidPercentile picks which percentile of Rackspace's published 30-day
+	// price distribution the controller bids at for spot pools. Lower
+	// percentiles mean cheaper bids and more frequent preemptions during
+	// volatile periods; higher percentiles hold through more price ticks.
+	// The actual bid is max(current_market, percentile_value) * 1.05.
+	//
+	// +kubebuilder:validation:Enum=P20;P50;P80
+	// +kubebuilder:default=P80
+	// +optional
+	BidPercentile string `json:"bidPercentile,omitempty"`
+
 	// Labels are propagated to the underlying Rackspace pool's CustomLabels
 	// and thus to the resulting Kubernetes Node labels.
 	//

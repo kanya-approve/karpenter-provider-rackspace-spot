@@ -202,7 +202,7 @@ func TestCreateSpot_HappyPath(t *testing.T) {
 
 func TestChooseBidPrice_MarketPlusHeadroomFallback(t *testing.T) {
 	p := NewProvider(newAPI(gomock.NewController(t)), &stubPricing{})
-	got, err := p.chooseBidPrice(context.Background(), newInstanceTypes()[0])
+	got, err := p.chooseBidPrice(context.Background(), newNodeClass(nil), newInstanceTypes()[0])
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestChooseBidPrice_MarketPlusHeadroomFallback(t *testing.T) {
 func TestChooseBidPrice_NoSpotOffering(t *testing.T) {
 	p := NewProvider(newAPI(gomock.NewController(t)), &stubPricing{})
 	it := &karpcloudprovider.InstanceType{Name: testServerCls} // no offerings
-	if _, err := p.chooseBidPrice(context.Background(), it); err == nil {
+	if _, err := p.chooseBidPrice(context.Background(), newNodeClass(nil), it); err == nil {
 		t.Error("expected error when no spot offering, got nil")
 	}
 }
