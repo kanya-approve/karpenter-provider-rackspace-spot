@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	karpcloudprovider "sigs.k8s.io/karpenter/pkg/cloudprovider"
+	"sigs.k8s.io/karpenter/pkg/scheduling"
 
 	apiv1 "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/apis/v1"
 )
@@ -77,7 +78,12 @@ func newNodeClass(bidPrice string, extraLabels map[string]string) *apiv1.Rackspa
 }
 
 func newInstanceTypes() []*karpcloudprovider.InstanceType {
-	return []*karpcloudprovider.InstanceType{{Name: testServerCls}}
+	spot := &karpcloudprovider.Offering{
+		Requirements: scheduling.NewRequirements(scheduling.NewRequirement(karpv1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, karpv1.CapacityTypeSpot)),
+		Price:        0.001,
+		Available:    true,
+	}
+	return []*karpcloudprovider.InstanceType{{Name: testServerCls, Offerings: karpcloudprovider.Offerings{spot}}}
 }
 
 func TestProviderIDRoundTrip(t *testing.T) {
@@ -165,8 +171,9 @@ func TestCreateSpot_HappyPath(t *testing.T) {
 	if pool.ProviderID != MakeProviderID(testCloudspace, PoolTypeSpot, PoolName(nc)) {
 		t.Errorf("unexpected providerID %q", pool.ProviderID)
 	}
-	if captured.BidPrice != "0.05" {
-		t.Errorf("BidPrice = %q, want 0.05", captured.BidPrice)
+	// Market (0.001) * 1.2 = 0.001200; NodeClass ceiling 0.05 doesn't clamp.
+	if captured.BidPrice != "0.001200" {
+		t.Errorf("BidPrice = %q, want 0.001200", captured.BidPrice)
 	}
 	if captured.Desired != 1 {
 		t.Errorf("Desired = %d, want 1", captured.Desired)
@@ -182,7 +189,7 @@ func TestCreateSpot_HappyPath(t *testing.T) {
 	}
 }
 
-func TestCreateSpot_RequiresBidPrice(t *testing.T) {
+func TestCreateSpot_RejectsWhenCeilingBelowMarket(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
 	p := NewProvider(api)
@@ -191,13 +198,36 @@ func TestCreateSpot_RequiresBidPrice(t *testing.T) {
 		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
 	// No CreateSpotNodePool call expected.
 
+	// market price in newInstanceTypes() is 0.001; ceiling at 0.0005 is below it.
 	_, err := p.Create(context.Background(),
-		newNodeClass("" /* no bid */, nil),
+		newNodeClass("0.0005", nil),
 		newClaim("uid-2", karpv1.CapacityTypeSpot),
 		newInstanceTypes(),
 	)
-	if err == nil || !strings.Contains(err.Error(), "bid price required") {
-		t.Fatalf("expected bid-price-required error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "exceeds NodeClass bidPrice ceiling") {
+		t.Fatalf("expected market-exceeds-ceiling error, got %v", err)
+	}
+}
+
+func TestChooseBidPrice_DynamicAndCeilingClamp(t *testing.T) {
+	its := newInstanceTypes()
+	cases := []struct {
+		name, ceiling, want string
+	}{
+		{"no-ceiling-uses-market-x1.2", "", "0.001200"},
+		{"ceiling-above-market-clamps", "0.005", "0.001200"},
+		{"ceiling-at-market-clamps-to-ceiling", "0.001000", "0.001000"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := chooseBidPrice(its[0], tc.ceiling)
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("chooseBidPrice(ceiling=%q) = %q, want %q", tc.ceiling, got, tc.want)
+			}
+		})
 	}
 }
 

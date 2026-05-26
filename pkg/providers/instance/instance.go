@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -114,8 +115,9 @@ func (p *DefaultProvider) Create(ctx context.Context, nodeClass *apiv1.Rackspace
 
 	switch capacityType {
 	case karpv1.CapacityTypeSpot:
-		if nodeClass.Spec.BidPrice == "" {
-			return nil, fmt.Errorf("bid price required for spot pool %s", name)
+		bid, err := chooseBidPrice(instanceType, nodeClass.Spec.BidPrice)
+		if err != nil {
+			return nil, fmt.Errorf("choosing bid for spot pool %s: %w", name, err)
 		}
 		pool := rxtspot.SpotNodePool{
 			Name:              name,
@@ -123,7 +125,7 @@ func (p *DefaultProvider) Create(ctx context.Context, nodeClass *apiv1.Rackspace
 			Cloudspace:        cloudspace,
 			ServerClass:       serverClass,
 			Desired:           1,
-			BidPrice:          nodeClass.Spec.BidPrice,
+			BidPrice:          bid,
 			CustomLabels:      labels,
 			CustomAnnotations: nodeClass.Spec.Annotations,
 			CustomTaints:      taints,
@@ -274,6 +276,48 @@ func (p *DefaultProvider) organization(ctx context.Context) (string, error) {
 // as-is.
 func PoolName(nc *karpv1.NodeClaim) string {
 	return string(nc.UID)
+}
+
+// chooseBidPrice computes the bid we send to Rackspace at pool-create time.
+// The market price floats every few seconds; a static bid set in the
+// NodeClass will eventually drop below the live market and Rackspace's
+// admission webhook will reject (BidPrice >= market is enforced).
+//
+//   - Start from the spot offering's live price (already pulled from
+//     ServerClass.CurrentMarketPricePerHour during translate()).
+//   - Mark it up by 20% as headroom against intra-minute price movement.
+//   - If NodeClass.spec.bidPrice is set, treat it as a CEILING (max
+//     willing-to-pay). Refuse to launch if market exceeds the ceiling —
+//     this is the user's explicit "no higher than this" knob.
+//   - If unset, no ceiling; we'll always bid market+20%.
+//
+// Format matches Rackspace's expectation: bare decimal string, no "$"
+// prefix, fixed at 6 decimal places to be safe.
+func chooseBidPrice(instanceType *karpcloudprovider.InstanceType, ceiling string) (string, error) {
+	var marketPrice float64
+	for _, off := range instanceType.Offerings {
+		if off.Requirements.Get(karpv1.CapacityTypeLabelKey).Any() == karpv1.CapacityTypeSpot {
+			marketPrice = off.Price
+			break
+		}
+	}
+	if marketPrice == 0 {
+		return "", fmt.Errorf("no spot offering or zero price for instance type %q", instanceType.Name)
+	}
+	bid := marketPrice * 1.2
+	if ceiling != "" {
+		c, err := strconv.ParseFloat(strings.TrimPrefix(strings.TrimSpace(ceiling), "$"), 64)
+		if err != nil {
+			return "", fmt.Errorf("invalid bidPrice ceiling %q: %w", ceiling, err)
+		}
+		if c < marketPrice {
+			return "", fmt.Errorf("market price %.6f exceeds NodeClass bidPrice ceiling %.6f for %q", marketPrice, c, instanceType.Name)
+		}
+		if bid > c {
+			bid = c
+		}
+	}
+	return strconv.FormatFloat(bid, 'f', 6, 64), nil
 }
 
 // deriveCapacityType picks one capacity type from the NodeClaim's
