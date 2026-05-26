@@ -109,7 +109,7 @@ func (p *DefaultProvider) Create(ctx context.Context, nodeClass *apiv1.Rackspace
 	name := PoolName(nodeClaim)
 	cloudspace := nodeClass.Spec.CloudspaceName
 	serverClass := instanceType.Name
-	labels := mergeLabels(nodeClass.Spec.Labels, nodeClaim)
+	labels := mergeLabels(nodeClass, nodeClaim, instanceType, capacityType)
 	taints := convertTaints(nodeClass.Spec.Taints)
 
 	switch capacityType {
@@ -341,13 +341,27 @@ func onDemandToPool(od *rxtspot.OnDemandNodePool, cloudspace string) *Pool {
 	}
 }
 
-func mergeLabels(extra map[string]string, nc *karpv1.NodeClaim) map[string]string {
+// mergeLabels builds the CustomLabels passed to Rackspace's pool API. These
+// flow through to kubelet --node-labels on the joining Node. We include the
+// well-known Karpenter labels (capacity-type, nodepool, instance-type,
+// topology zone/region) because Rackspace's managed kubelet otherwise sets
+// node.kubernetes.io/instance-type to its internal VM SKU (e.g. compute1-4)
+// rather than the ServerClass — which breaks Karpenter's bin-packing.
+func mergeLabels(nodeClass *apiv1.RackspaceSpotNodeClass, nc *karpv1.NodeClaim, instanceType *karpcloudprovider.InstanceType, capacityType string) map[string]string {
+	zone := instanceType.Requirements.Get(corev1.LabelTopologyZone).Any()
 	out := map[string]string{
-		KarpenterManagedLabel: "true",
-		NodeClaimNameLabel:    nc.Name,
-		NodeClaimUIDLabel:     string(nc.UID),
+		KarpenterManagedLabel:          "true",
+		NodeClaimNameLabel:             nc.Name,
+		NodeClaimUIDLabel:              string(nc.UID),
+		karpv1.CapacityTypeLabelKey:    capacityType,
+		corev1.LabelInstanceTypeStable: instanceType.Name,
+		corev1.LabelTopologyZone:       zone,
+		corev1.LabelTopologyRegion:     zone,
 	}
-	for k, v := range extra {
+	if np := nc.Labels[karpv1.NodePoolLabelKey]; np != "" {
+		out[karpv1.NodePoolLabelKey] = np
+	}
+	for k, v := range nodeClass.Spec.Labels {
 		out[k] = v
 	}
 	return out
