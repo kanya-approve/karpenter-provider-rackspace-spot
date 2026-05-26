@@ -1,4 +1,4 @@
-name: Edge image
+name: Snapshot
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: edge-image
+  group: snapshot
   cancel-in-progress: true
 
 env:
@@ -17,7 +17,7 @@ env:
 
 jobs:
   publish:
-    name: build & push :edge
+    name: build & push snapshot
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -39,4 +39,4 @@ jobs:
         run: |
           ko build --bare ./cmd/controller \
             --platform=linux/amd64,linux/arm64 \
-            --tags=edge,sha-${{ github.sha }}
+            --tags=main,sha-${{ github.sha }}
