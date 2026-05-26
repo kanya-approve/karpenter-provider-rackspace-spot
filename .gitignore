@@ -1,0 +1,28 @@
+# Build artifacts
+bin/
+dist/
+*.test
+*.out
+coverage.txt
+cover.html
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Local kube + secrets
+kubeconfig
+*.kubeconfig
+.envrc
+.env
+.env.local
+
+# Generated images / charts
+*.tgz
+
+# Go workspace files
+go.work
+go.work.sum
