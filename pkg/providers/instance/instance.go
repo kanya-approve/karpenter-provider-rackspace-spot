@@ -79,6 +79,16 @@ type Provider interface {
 	OrganizationID(ctx context.Context) (string, error)
 }
 
+// API is the narrow subset of the rxtspot SDK the instance provider depends
+// on. The full rxtspot.SpotAPI satisfies it, and tests can compose the
+// per-resource mocks (gomock fixtures the SDK ships) to satisfy it without
+// pulling in the broken MockSpotAPI super-mock.
+type API interface {
+	rxtspot.SpotNodePoolAPI
+	rxtspot.OnDemandNodePoolAPI
+	rxtspot.OrganizationAPI
+}
+
 type DefaultProvider struct {
 	spot     rxtspot.SpotNodePoolAPI
 	onDemand rxtspot.OnDemandNodePoolAPI
@@ -88,7 +98,7 @@ type DefaultProvider struct {
 	org   string
 }
 
-func NewProvider(api rxtspot.SpotAPI) *DefaultProvider {
+func NewProvider(api API) *DefaultProvider {
 	return &DefaultProvider{spot: api, onDemand: api, orgs: api}
 }
 
