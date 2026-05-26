@@ -17,7 +17,7 @@ jobs:
     name: build & publish
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Derive versions
         id: versions
@@ -33,7 +33,7 @@ jobs:
             echo "chart-version=${CHART_VERSION}"
           } >> "${GITHUB_OUTPUT}"
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: latest
 
@@ -78,7 +78,7 @@ jobs:
             "oci://ghcr.io/${{ github.repository_owner }}/charts"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           files: |
