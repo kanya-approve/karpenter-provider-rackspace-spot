@@ -25,6 +25,10 @@ rules:
   - apiGroups: [""]
     resources: ["nodes", "pods", "events", "namespaces"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Subresource: drain logic creates eviction objects via pods/eviction.
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
