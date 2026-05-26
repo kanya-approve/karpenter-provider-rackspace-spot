@@ -181,9 +181,10 @@ func TestCreateSpot_HappyPath(t *testing.T) {
 	if pool.ProviderID != MakeProviderID(testCloudspace, PoolTypeSpot, PoolName(nc)) {
 		t.Errorf("unexpected providerID %q", pool.ProviderID)
 	}
-	// Market (0.001) * 1.2 = 0.001200; always-bid-market-plus-headroom.
-	if captured.BidPrice != "0.001200" {
-		t.Errorf("BidPrice = %q, want 0.001200", captured.BidPrice)
+	// Market 0.001 * 1.2 = 0.0012, ceil to 3 decimals = 0.002.
+	// Rackspace's CRD validation only accepts up to 3 dp.
+	if captured.BidPrice != "0.002" {
+		t.Errorf("BidPrice = %q, want 0.002", captured.BidPrice)
 	}
 	if captured.Desired != 1 {
 		t.Errorf("Desired = %d, want 1", captured.Desired)
@@ -205,8 +206,8 @@ func TestChooseBidPrice_MarketPlusHeadroomFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if got != "0.001200" {
-		t.Errorf("chooseBidPrice (fallback) = %q, want 0.001200 (market 0.001 * 1.2)", got)
+	if got != "0.002" {
+		t.Errorf("chooseBidPrice (fallback) = %q, want 0.002 (market 0.001 * 1.2 ceil 3dp)", got)
 	}
 }
 

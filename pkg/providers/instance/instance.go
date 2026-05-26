@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -318,7 +319,9 @@ func (p *DefaultProvider) chooseBidPrice(ctx context.Context, instanceType *karp
 			log.FromContext(ctx).V(1).Info("percentile lookup failed, falling back to market*1.2", "err", err.Error(), "instanceType", instanceType.Name)
 		}
 	}
-	return strconv.FormatFloat(target, 'f', 6, 64), nil
+	// Rackspace's CRD validation rejects anything > 3 decimal places. Round up
+	// so we never end up below market after the truncation.
+	return strconv.FormatFloat(math.Ceil(target*1000)/1000, 'f', 3, 64), nil
 }
 
 // deriveCapacityType picks one capacity type from the NodeClaim's
