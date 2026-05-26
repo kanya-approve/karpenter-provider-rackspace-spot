@@ -19,9 +19,13 @@ import (
 	rxtspot "github.com/rackspace-spot/spot-go-sdk/api/v1"
 	rxtmocks "github.com/rackspace-spot/spot-go-sdk/api/v1/mocks"
 	gomock "go.uber.org/mock/gomock"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	karpcloudprovider "sigs.k8s.io/karpenter/pkg/cloudprovider"
+
+	apiv1 "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/apis/v1"
 )
 
 const (
@@ -32,8 +36,7 @@ const (
 
 // composedAPI satisfies instance.API by combining the three per-resource SDK
 // mocks. We use it instead of MockSpotAPI because the SDK's super-mock has a
-// stale signature for SpotPricingAPI.GetMarketPriceForServerClass (it returns
-// (string, error) while the real interface returns string).
+// stale signature for SpotPricingAPI.GetMarketPriceForServerClass.
 type composedAPI struct {
 	*rxtmocks.MockSpotNodePoolAPI
 	*rxtmocks.MockOnDemandNodePoolAPI
@@ -48,13 +51,33 @@ func newAPI(ctrl *gomock.Controller) *composedAPI {
 	}
 }
 
-func newClaim(uid string) *karpv1.NodeClaim {
-	return &karpv1.NodeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "claim-" + uid,
-			UID:  types.UID(uid),
+func newClaim(uid, capacityType string) *karpv1.NodeClaim {
+	nc := &karpv1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "claim-" + uid, UID: types.UID(uid)},
+	}
+	if capacityType != "" {
+		nc.Spec.Requirements = []karpv1.NodeSelectorRequirementWithMinValues{{
+			Key:      karpv1.CapacityTypeLabelKey,
+			Operator: corev1.NodeSelectorOpIn,
+			Values:   []string{capacityType},
+		}}
+	}
+	return nc
+}
+
+func newNodeClass(bidPrice string, extraLabels map[string]string) *apiv1.RackspaceSpotNodeClass {
+	return &apiv1.RackspaceSpotNodeClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		Spec: apiv1.RackspaceSpotNodeClassSpec{
+			CloudspaceName: testCloudspace,
+			BidPrice:       bidPrice,
+			Labels:         extraLabels,
 		},
 	}
+}
+
+func newInstanceTypes() []*karpcloudprovider.InstanceType {
+	return []*karpcloudprovider.InstanceType{{Name: testServerCls}}
 }
 
 func TestProviderIDRoundTrip(t *testing.T) {
@@ -93,9 +116,15 @@ func TestParseProviderID_Rejects(t *testing.T) {
 }
 
 func TestPoolNameIsDeterministic(t *testing.T) {
-	nc := newClaim("abc-123")
+	nc := newClaim("abc-123", "")
 	if got, want := PoolName(nc), PoolNamePrefix+"abc-123"; got != want {
 		t.Errorf("PoolName = %q, want %q", got, want)
+	}
+}
+
+func TestDeriveCapacityType_DefaultsToOnDemand(t *testing.T) {
+	if got := deriveCapacityType(newClaim("x", "")); got != karpv1.CapacityTypeOnDemand {
+		t.Errorf("default capacity type = %q, want on-demand", got)
 	}
 }
 
@@ -123,14 +152,10 @@ func TestCreateSpot_HappyPath(t *testing.T) {
 			return &c, nil
 		})
 
-	nc := newClaim("uid-1")
-	pool, err := p.Create(context.Background(), nc, CreateOptions{
-		Cloudspace:   testCloudspace,
-		ServerClass:  testServerCls,
-		BidPrice:     "0.05",
-		CapacityType: karpv1.CapacityTypeSpot,
-		Labels:       map[string]string{"team": "platform"},
-	})
+	nc := newClaim("uid-1", karpv1.CapacityTypeSpot)
+	nodeClass := newNodeClass("0.05", map[string]string{"team": "platform"})
+
+	pool, err := p.Create(context.Background(), nodeClass, nc, newInstanceTypes())
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
@@ -166,11 +191,11 @@ func TestCreateSpot_RequiresBidPrice(t *testing.T) {
 		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
 	// No CreateSpotNodePool call expected.
 
-	_, err := p.Create(context.Background(), newClaim("uid-2"), CreateOptions{
-		Cloudspace:   testCloudspace,
-		ServerClass:  testServerCls,
-		CapacityType: karpv1.CapacityTypeSpot,
-	})
+	_, err := p.Create(context.Background(),
+		newNodeClass("" /* no bid */, nil),
+		newClaim("uid-2", karpv1.CapacityTypeSpot),
+		newInstanceTypes(),
+	)
 	if err == nil || !strings.Contains(err.Error(), "bid price required") {
 		t.Fatalf("expected bid-price-required error, got %v", err)
 	}
@@ -188,18 +213,18 @@ func TestCreateOnDemand_HappyPath(t *testing.T) {
 	api.MockOnDemandNodePoolAPI.EXPECT().
 		GetOnDemandNodePool(gomock.Any(), testOrgID, gomock.Any()).
 		Return(&rxtspot.OnDemandNodePool{
-			Name:        PoolName(newClaim("uid-3")),
+			Name:        PoolName(newClaim("uid-3", "")),
 			Org:         testOrgID,
 			Cloudspace:  testCloudspace,
 			ServerClass: testServerCls,
 			Desired:     1,
 		}, nil)
 
-	pool, err := p.Create(context.Background(), newClaim("uid-3"), CreateOptions{
-		Cloudspace:   testCloudspace,
-		ServerClass:  testServerCls,
-		CapacityType: karpv1.CapacityTypeOnDemand,
-	})
+	pool, err := p.Create(context.Background(),
+		newNodeClass("", nil),
+		newClaim("uid-3", karpv1.CapacityTypeOnDemand),
+		newInstanceTypes(),
+	)
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
@@ -220,14 +245,13 @@ func TestCreate_IdempotentOnAlreadyExists(t *testing.T) {
 		Return(errors.New("HTTP 409: AlreadyExists"))
 	api.MockSpotNodePoolAPI.EXPECT().
 		GetSpotNodePool(gomock.Any(), testOrgID, gomock.Any()).
-		Return(&rxtspot.SpotNodePool{Name: PoolName(newClaim("uid-4")), BidPrice: "0.05"}, nil)
+		Return(&rxtspot.SpotNodePool{Name: PoolName(newClaim("uid-4", "")), BidPrice: "0.05"}, nil)
 
-	_, err := p.Create(context.Background(), newClaim("uid-4"), CreateOptions{
-		Cloudspace:   testCloudspace,
-		ServerClass:  testServerCls,
-		BidPrice:     "0.05",
-		CapacityType: karpv1.CapacityTypeSpot,
-	})
+	_, err := p.Create(context.Background(),
+		newNodeClass("0.05", nil),
+		newClaim("uid-4", karpv1.CapacityTypeSpot),
+		newInstanceTypes(),
+	)
 	if err != nil {
 		t.Fatalf("expected idempotent success on AlreadyExists, got %v", err)
 	}

@@ -89,15 +89,7 @@ func (c *CloudProvider) Create(ctx context.Context, nc *karpv1.NodeClaim) (*karp
 		return nil, err
 	}
 
-	pool, err := c.instances.Create(ctx, nc, instance.CreateOptions{
-		Cloudspace:   nodeClass.Spec.CloudspaceName,
-		ServerClass:  instType.Name,
-		BidPrice:     nodeClass.Spec.BidPrice,
-		CapacityType: capacityType,
-		Labels:       nodeClass.Spec.Labels,
-		Annotations:  nodeClass.Spec.Annotations,
-		Taints:       nodeClass.Spec.Taints,
-	})
+	pool, err := c.instances.Create(ctx, nodeClass, nc, []*karpcloudprovider.InstanceType{instType})
 	if err != nil {
 		return nil, fmt.Errorf("creating pool: %w", err)
 	}

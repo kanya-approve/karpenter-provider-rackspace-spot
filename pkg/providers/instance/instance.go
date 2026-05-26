@@ -20,6 +20,9 @@ import (
 	rxtspot "github.com/rackspace-spot/spot-go-sdk/api/v1"
 	corev1 "k8s.io/api/core/v1"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	karpcloudprovider "sigs.k8s.io/karpenter/pkg/cloudprovider"
+
+	apiv1 "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/apis/v1"
 )
 
 const (
@@ -39,18 +42,6 @@ const (
 // ErrPoolNotFound is returned by Get/Delete when the pool no longer exists.
 var ErrPoolNotFound = errors.New("rackspace spot pool not found")
 
-// CreateOptions captures everything needed to materialize a Rackspace pool for
-// a single NodeClaim.
-type CreateOptions struct {
-	Cloudspace   string
-	ServerClass  string
-	BidPrice     string // Required for spot; ignored for on-demand.
-	CapacityType string // karpv1.CapacityTypeSpot or karpv1.CapacityTypeOnDemand
-	Labels       map[string]string
-	Annotations  map[string]string
-	Taints       []corev1.Taint
-}
-
 // Pool is the provider's normalized view of a Rackspace SpotNodePool or
 // OnDemandNodePool.
 type Pool struct {
@@ -69,7 +60,7 @@ type Pool struct {
 }
 
 type Provider interface {
-	Create(ctx context.Context, nc *karpv1.NodeClaim, opts CreateOptions) (*Pool, error)
+	Create(ctx context.Context, nodeClass *apiv1.RackspaceSpotNodeClass, nodeClaim *karpv1.NodeClaim, instanceTypes []*karpcloudprovider.InstanceType) (*Pool, error)
 	Get(ctx context.Context, providerID string) (*Pool, error)
 	Delete(ctx context.Context, providerID string) error
 	List(ctx context.Context, cloudspace string) ([]*Pool, error)
@@ -102,55 +93,63 @@ func NewProvider(api API) *DefaultProvider {
 	return &DefaultProvider{spot: api, onDemand: api, orgs: api}
 }
 
-func (p *DefaultProvider) Create(ctx context.Context, nc *karpv1.NodeClaim, opts CreateOptions) (*Pool, error) {
+func (p *DefaultProvider) Create(ctx context.Context, nodeClass *apiv1.RackspaceSpotNodeClass, nodeClaim *karpv1.NodeClaim, instanceTypes []*karpcloudprovider.InstanceType) (*Pool, error) {
+	if len(instanceTypes) == 0 {
+		return nil, errors.New("no instance types provided")
+	}
+	instanceType := instanceTypes[0]
+	capacityType := deriveCapacityType(nodeClaim)
+
 	org, err := p.organization(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	name := PoolName(nc)
-	labels := mergeLabels(opts.Labels, nc)
-	taints := convertTaints(opts.Taints)
+	name := PoolName(nodeClaim)
+	cloudspace := nodeClass.Spec.CloudspaceName
+	serverClass := instanceType.Name
+	labels := mergeLabels(nodeClass.Spec.Labels, nodeClaim)
+	taints := convertTaints(nodeClass.Spec.Taints)
 
-	switch opts.CapacityType {
+	switch capacityType {
 	case karpv1.CapacityTypeSpot:
-		if opts.BidPrice == "" {
+		if nodeClass.Spec.BidPrice == "" {
 			return nil, fmt.Errorf("bid price required for spot pool %s", name)
 		}
 		pool := rxtspot.SpotNodePool{
 			Name:              name,
 			Org:               org,
-			Cloudspace:        opts.Cloudspace,
-			ServerClass:       opts.ServerClass,
+			Cloudspace:        cloudspace,
+			ServerClass:       serverClass,
 			Desired:           1,
-			BidPrice:          opts.BidPrice,
+			BidPrice:          nodeClass.Spec.BidPrice,
 			CustomLabels:      labels,
-			CustomAnnotations: opts.Annotations,
+			CustomAnnotations: nodeClass.Spec.Annotations,
 			CustomTaints:      taints,
 		}
 		if err := p.spot.CreateSpotNodePool(ctx, org, pool); err != nil && !isAlreadyExists(err) {
 			return nil, fmt.Errorf("creating spot pool %s: %w", name, err)
 		}
-		return p.Get(ctx, MakeProviderID(opts.Cloudspace, PoolTypeSpot, name))
+		return p.Get(ctx, MakeProviderID(cloudspace, PoolTypeSpot, name))
 
 	case karpv1.CapacityTypeOnDemand:
 		pool := rxtspot.OnDemandNodePool{
 			Name:              name,
 			Org:               org,
-			Cloudspace:        opts.Cloudspace,
-			ServerClass:       opts.ServerClass,
+			Cloudspace:        cloudspace,
+			ServerClass:       serverClass,
 			Desired:           1,
 			CustomLabels:      labels,
-			CustomAnnotations: opts.Annotations,
+			CustomAnnotations: nodeClass.Spec.Annotations,
 			CustomTaints:      taints,
 		}
 		if err := p.onDemand.CreateOnDemandNodePool(ctx, org, pool); err != nil && !isAlreadyExists(err) {
 			return nil, fmt.Errorf("creating on-demand pool %s: %w", name, err)
 		}
-		return p.Get(ctx, MakeProviderID(opts.Cloudspace, PoolTypeOnDemand, name))
+		return p.Get(ctx, MakeProviderID(cloudspace, PoolTypeOnDemand, name))
 
 	default:
-		return nil, fmt.Errorf("unsupported capacity type %q", opts.CapacityType)
+		return nil, fmt.Errorf("unsupported capacity type %q", capacityType)
 	}
 }
 
@@ -270,6 +269,19 @@ func (p *DefaultProvider) organization(ctx context.Context) (string, error) {
 // PoolName returns the deterministic Rackspace pool name for a NodeClaim.
 func PoolName(nc *karpv1.NodeClaim) string {
 	return PoolNamePrefix + string(nc.UID)
+}
+
+// deriveCapacityType picks one capacity type from the NodeClaim's
+// karpenter.sh/capacity-type requirement. Defaults to on-demand when unset.
+// If multiple values are allowed (e.g. ["spot","on-demand"]), the first wins —
+// the scheduler ordered them by preference.
+func deriveCapacityType(nc *karpv1.NodeClaim) string {
+	for _, r := range nc.Spec.Requirements {
+		if r.Key == karpv1.CapacityTypeLabelKey && len(r.Values) > 0 {
+			return r.Values[0]
+		}
+	}
+	return karpv1.CapacityTypeOnDemand
 }
 
 // MakeProviderID builds a Karpenter providerID for a Rackspace pool.
