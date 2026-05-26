@@ -10,7 +10,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  KO_DOCKER_REPO: ghcr.io/${{ github.repository }}
 
 jobs:
   release:
@@ -33,6 +33,11 @@ jobs:
             echo "chart-version=${CHART_VERSION}"
           } >> "${GITHUB_OUTPUT}"
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - uses: azure/setup-helm@v5
         with:
           version: latest
@@ -46,31 +51,19 @@ jobs:
             --app-version "${{ steps.versions.outputs.app-version }}" \
             --destination dist
 
-      - uses: docker/setup-qemu-action@v4
-        with:
-          platforms: linux/amd64,linux/arm64
-
-      - uses: docker/setup-buildx-action@v4
-
-      - name: Log in to ghcr.io
-        uses: docker/login-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build + push image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          provenance: false
-          build-args: |
-            VERSION=${{ steps.versions.outputs.app-version }}
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ steps.versions.outputs.app-version }}
-            ${{ env.IMAGE_NAME }}:latest
+      - uses: ko-build/setup-ko@v0.9
+
+      - name: Build & push image
+        run: |
+          ko build --bare ./cmd/controller \
+            --platform=linux/amd64,linux/arm64 \
+            --tags=${{ steps.versions.outputs.app-version }},latest
 
       - name: Push Helm chart to OCI registry
         run: |

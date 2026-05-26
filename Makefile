@@ -40,12 +40,16 @@ generate: $(CONTROLLER_GEN) ## Generate CRDs, deepcopy; sync CRD into chart
 	mkdir -p charts/karpenter/crds
 	cp config/crd/*.yaml charts/karpenter/crds/
 
-IMAGE ?= ghcr.io/kanya-approve/karpenter-provider-rackspace-spot
-TAG   ?= dev
+KO_DOCKER_REPO ?= ghcr.io/kanya-approve/karpenter-provider-rackspace-spot
+TAG            ?= dev
 
-.PHONY: docker
-docker: ## Build the container image
-	docker build --build-arg VERSION=$(TAG) -t $(IMAGE):$(TAG) .
+.PHONY: image
+image: ## Build & push the container image with ko (set KO_DOCKER_REPO and TAG)
+	KO_DOCKER_REPO=$(KO_DOCKER_REPO) ko build --bare ./cmd/controller --tags=$(TAG)
+
+.PHONY: image-local
+image-local: ## Build a local-only image (no push); prints the tarball path
+	KO_DOCKER_REPO=ko.local ko build --bare ./cmd/controller --tags=$(TAG) --local
 
 .PHONY: chart-lint
 chart-lint: ## Lint the Helm chart
