@@ -319,9 +319,20 @@ func (p *DefaultProvider) chooseBidPrice(ctx context.Context, instanceType *karp
 			log.FromContext(ctx).V(1).Info("percentile lookup failed, falling back to market*1.2", "err", err.Error(), "instanceType", instanceType.Name)
 		}
 	}
-	// Rackspace's CRD validation rejects anything > 3 decimal places. Round up
-	// so we never end up below market after the truncation.
-	return strconv.FormatFloat(math.Ceil(target*1000)/1000, 'f', 3, 64), nil
+	return strconv.FormatFloat(roundBidUp(target), 'f', -1, 64), nil
+}
+
+// roundBidUp honors Rackspace's admission validation:
+//   - "bidPrice can only be a positive number up to three decimal places"
+//   - "BidPrice must be a multiple of 0.01 when greater than 0.05"
+//
+// Rounding is always UP so we never accidentally fall below the market
+// price we just computed against.
+func roundBidUp(bid float64) float64 {
+	if bid > 0.05 {
+		return math.Ceil(bid*100) / 100 // 2 dp (multiples of 0.01)
+	}
+	return math.Ceil(bid*1000) / 1000 // 3 dp
 }
 
 // deriveCapacityType picks one capacity type from the NodeClaim's
