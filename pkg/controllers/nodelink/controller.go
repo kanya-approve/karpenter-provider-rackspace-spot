@@ -29,16 +29,10 @@ import (
 	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/instance"
 )
 
-// Controller patches a NodeClaim's status.providerID to match the joining
-// Node's spec.providerID (set by Rackspace's CCM as openstack:///<vm-uuid>),
-// so Karpenter's lifecycle controller can link them and transition the
-// NodeClaim to Registered.
-//
-// The provider's Create() returns a rackspacespot://<cs>/<kind>/<uid>
-// providerID at NodeClaim creation time because we don't know the eventual
-// VM UUID — Rackspace's auction decouples bid acceptance from server
-// assignment. Once a Node joins carrying our managed label + the NodeClaim's
-// UID label, this reconciler rewrites the providerID.
+// Controller rewrites NodeClaim.status.providerID to match the joining
+// Node.spec.providerID (CCM-set openstack:///<vm-uuid>). We can't return
+// the final providerID from Create() because Rackspace's auction decouples
+// bid acceptance from server assignment — VM UUID isn't known yet.
 type Controller struct {
 	kubeClient client.Client
 }

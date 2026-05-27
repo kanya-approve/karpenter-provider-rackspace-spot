@@ -46,15 +46,8 @@ type Percentiles struct {
 }
 
 // Provider exposes per-hour prices for Rackspace Spot ServerClasses.
-//
-// SpotPrice / OnDemandPrice / MinBidPrice still read straight from a
-// ServerClass for backward compatibility — they're inexpensive and Karpenter
-// already has the ServerClass at scheduling time.
-//
-// Percentiles fetches from the live S3 feed (with caching + embedded
-// fallback) and is the right input to smart-bid logic — bidding at P80 +
-// market-clearing buffer gives stable wins across momentary spot price
-// spikes.
+// Percentiles fetches from the live S3 feed (cached, with embedded fallback);
+// the *Price methods read straight off a ServerClass.
 type Provider interface {
 	SpotPrice(sc *rxtspot.ServerClass) float64
 	OnDemandPrice(sc *rxtspot.ServerClass) float64

@@ -35,10 +35,8 @@ const (
 	PoolTypeSpot     = "spot"
 	PoolTypeOnDemand = "ondemand"
 
-	// KarpenterManagedLabel is set on every pool we create; List() filters
-	// foreign pools out by this label. Rackspace's admission webhook
-	// requires pool names to be a bare lowercase UUID, so we can't use a
-	// name prefix to mark ours.
+	// KarpenterManagedLabel marks ours vs. foreign pools. Rackspace's
+	// admission webhook forbids name prefixes (pool names must be a bare UUID).
 	KarpenterManagedLabel = "karpenter.rackspace.com/managed"
 	NodeClaimNameLabel    = "karpenter.rackspace.com/nodeclaim-name"
 	NodeClaimUIDLabel     = "karpenter.rackspace.com/nodeclaim-uid"
@@ -257,18 +255,9 @@ func PoolName(nc *karpv1.NodeClaim) string {
 	return string(nc.UID)
 }
 
-// chooseBidPrice computes the bid we send to Rackspace at pool-create time.
-//
-// Strategy: bid max(market, percentile_from_NodeClass) * 1.05.
-//   - market clears Rackspace's "bid >= current market" admission check.
-//   - percentile_from_NodeClass is one of P20/P50/P80 (default P80) from
-//     Rackspace's published 30-day price distribution; bidding at-or-above
-//     that level means we hold the node through that fraction of typical
-//     price ticks rather than getting reclaimed.
-//   - * 1.05 adds a small buffer for intra-tick movement.
-//
-// Falls back to market * 1.2 if the percentile feed lookup fails for any
-// reason (cold start before first live fetch, region/SC missing, etc.).
+// chooseBidPrice returns max(market, P_x) * 1.05, where P_x is the NodeClass's
+// selected percentile from Rackspace's 30-day price feed. Falls back to
+// market * 1.2 if the feed lookup fails (cold start, missing region/SC).
 func (p *DefaultProvider) chooseBidPrice(ctx context.Context, nodeClass *apiv1.RackspaceSpotNodeClass, instanceType *karpcloudprovider.InstanceType) (string, error) {
 	var marketPrice float64
 	for _, off := range instanceType.Offerings {
@@ -401,17 +390,7 @@ func onDemandToPool(od *rxtspot.OnDemandNodePool, cloudspace string) *Pool {
 	}
 }
 
-// mergeLabels builds the CustomLabels passed to Rackspace's pool API. These
-// flow through to kubelet --node-labels on the joining Node.
-//
-// We deliberately do NOT set node.kubernetes.io/instance-type or
-// topology.kubernetes.io/region: Rackspace's OpenStack CCM owns those
-// post-registration (setting them to e.g. "compute1-4" / "HKG"), and the
-// pool API surfaces a "Custom Metadata conflicts" warning when we try.
-// karpenter.sh/* and karpenter.rackspace.com/* are untouched by the CCM,
-// so those are sufficient for Karpenter binding + our internal tracking.
-// topology.kubernetes.io/zone survives the CCM and is required by the
-// scheduler, so we keep it. See GH issue #9.
+// See GH issue #9.
 func mergeLabels(nodeClass *apiv1.RackspaceSpotNodeClass, nc *karpv1.NodeClaim, instanceType *karpcloudprovider.InstanceType, capacityType string) map[string]string {
 	zone := instanceType.Requirements.Get(corev1.LabelTopologyZone).Any()
 	out := map[string]string{

@@ -74,17 +74,10 @@ func (c *CloudProvider) IsDrifted(_ context.Context, _ *karpv1.NodeClaim) (karpc
 	return "", nil
 }
 
-// RepairPolicies tells Karpenter which Node conditions warrant auto-
-// replacement and how long to tolerate them before triggering Delete +
-// re-provision. Standard set covers the unhealthy paths that should
-// almost never persist on a healthy spot/on-demand server:
-//   - kubelet stopped reporting (Ready=False or Unknown) — VM dead,
-//     kubelet crashed, runtime hung
-//   - networking lost — CNI broken, hypervisor partition
-//
-// 30 minutes is the convention from AWS / Azure / OCI providers: long
-// enough to ride out a brief blip but short enough that a wedged node
-// doesn't block its workloads for hours.
+// RepairPolicies returns the standard 30-min toleration window for
+// Ready=False/Unknown and NetworkUnavailable=True. 30 min matches the
+// AWS/Azure/OCI convention — rides out brief blips, doesn't let a wedged
+// node strand workloads for hours.
 func (c *CloudProvider) RepairPolicies() []karpcloudprovider.RepairPolicy {
 	return []karpcloudprovider.RepairPolicy{
 		{ConditionType: corev1.NodeReady, ConditionStatus: corev1.ConditionFalse, TolerationDuration: 30 * time.Minute},
