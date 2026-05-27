@@ -39,11 +39,6 @@ const Name = "rackspacespot"
 // that this provider responds to.
 const NodeClassKind = "RackspaceSpotNodeClass"
 
-// NodeClassHashAnnotation is stamped on each NodeClaim at Create time with
-// a hash of the drift-relevant NodeClass spec fields. IsDrifted recomputes
-// from the current spec and rolls the node on mismatch.
-const NodeClassHashAnnotation = "karpenter.rackspace.com/nodeclass-hash"
-
 // CloudProvider implements sigs.k8s.io/karpenter/pkg/cloudprovider.CloudProvider
 // for Rackspace Spot.
 type CloudProvider struct {
@@ -70,26 +65,12 @@ func (c *CloudProvider) GetSupportedNodeClasses() []status.Object {
 	return []status.Object{&apiv1.RackspaceSpotNodeClass{}}
 }
 
-// IsDrifted returns a non-empty DriftReason when the NodeClaim's stored
-// NodeClass hash no longer matches the current NodeClass spec. Karpenter
-// then rolls the node so it reflects the latest spec.
-//
-// If the NodeClaim has no stored hash (legacy claim from before drift
-// detection landed, or one we couldn't stamp), we conservatively return
-// no-drift — replacing it would churn without a clear signal of what
-// changed.
-func (c *CloudProvider) IsDrifted(ctx context.Context, nc *karpv1.NodeClaim) (karpcloudprovider.DriftReason, error) {
-	stored := nc.Annotations[NodeClassHashAnnotation]
-	if stored == "" {
-		return "", nil
-	}
-	nodeClass, err := c.resolveNodeClass(ctx, nc)
-	if err != nil {
-		return "", fmt.Errorf("resolving node class for drift check: %w", err)
-	}
-	if nodeClass.Hash() != stored {
-		return "NodeClassChanged", nil
-	}
+// IsDrifted is a no-op for this provider. Rackspace pools have no
+// node-immutable spec fields worth a roll: CloudspaceName is fixed per
+// operator deploy, Labels/Annotations/Taints can be mutated in-place on
+// the Node, and the bid is locked at pool create time. If a real drift
+// surface emerges later, implement it then.
+func (c *CloudProvider) IsDrifted(_ context.Context, _ *karpv1.NodeClaim) (karpcloudprovider.DriftReason, error) {
 	return "", nil
 }
 
@@ -133,7 +114,7 @@ func (c *CloudProvider) Create(ctx context.Context, nc *karpv1.NodeClaim) (*karp
 		return nil, fmt.Errorf("creating pool: %w", err)
 	}
 
-	return c.hydrateClaim(nc, pool, instType, capacityType, region, nodeClass), nil
+	return c.hydrateClaim(nc, pool, instType, capacityType, region), nil
 }
 
 func (c *CloudProvider) Delete(ctx context.Context, nc *karpv1.NodeClaim) error {
@@ -349,7 +330,7 @@ func (c *CloudProvider) pickInstanceType(ctx context.Context, nc *karpv1.NodeCla
 	return it, capacityType, nil
 }
 
-func (c *CloudProvider) hydrateClaim(orig *karpv1.NodeClaim, pool *instance.Pool, it *karpcloudprovider.InstanceType, capacityType, region string, nodeClass *apiv1.RackspaceSpotNodeClass) *karpv1.NodeClaim {
+func (c *CloudProvider) hydrateClaim(orig *karpv1.NodeClaim, pool *instance.Pool, it *karpcloudprovider.InstanceType, capacityType, region string) *karpv1.NodeClaim {
 	out := orig.DeepCopy()
 	out.Status.ProviderID = pool.ProviderID
 	out.Status.Capacity = it.Capacity
@@ -363,10 +344,6 @@ func (c *CloudProvider) hydrateClaim(orig *karpv1.NodeClaim, pool *instance.Pool
 	out.Labels[corev1.LabelTopologyRegion] = region
 	out.Labels[corev1.LabelArchStable] = karpv1.ArchitectureAmd64
 	out.Labels[corev1.LabelOSStable] = string(corev1.Linux)
-	if out.Annotations == nil {
-		out.Annotations = map[string]string{}
-	}
-	out.Annotations[NodeClassHashAnnotation] = nodeClass.Hash()
 	return out
 }
 

@@ -10,7 +10,6 @@ Alpha. Driven end-to-end on a real Cloudspace; all core flows validated:
 - **Scale down** (consolidation drains nodes via the eviction API and deletes the underlying pool)
 - **Smart bidding** (`max(market, P{20,50,80}) × 1.05`, clamped to Rackspace's per-ServerClass `minBidPrice` floor, rounded to Rackspace's 3-dp / 2-dp-above-$0.05 precision rules)
 - **External pool delete recovery** (Karpenter's `registrationTimeout` triggers our `Delete`, the SDK returns 404, NodeClaim is cleaned up and replaced)
-- **Drift detection** (NodeClass edits to labels/taints/annotations/cloudspace/serverClassSelector roll the affected nodes via a hash-annotation comparison)
 - **Repair policies** (Node `Ready=False/Unknown` or `NetworkUnavailable=True` for 30+ min auto-replaces the node)
 
 What's not in yet:
