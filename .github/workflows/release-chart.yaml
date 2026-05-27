@@ -9,6 +9,7 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write
 
 concurrency:
   group: release-chart
@@ -43,6 +44,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: sigstore/cosign-installer@v4.1.0
+
       - name: Package + push
         run: |
           mkdir -p dist
@@ -52,3 +55,8 @@ jobs:
             --destination dist
           helm push "dist/${CHART_NAME}-${{ steps.ver.outputs.version }}.tgz" \
             "oci://ghcr.io/${{ github.repository_owner }}/charts"
+
+      - name: Sign chart (cosign keyless)
+        run: |
+          cosign sign --yes \
+            "ghcr.io/${{ github.repository_owner }}/charts/${CHART_NAME}:${{ steps.ver.outputs.version }}"

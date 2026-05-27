@@ -29,7 +29,7 @@ Grab a refresh token from your Rackspace Spot account page, then install with on
 # inline (token from env var or pasted directly)
 helm install karpenter \
   oci://ghcr.io/kanya-approve/charts/karpenter-provider-rackspace-spot \
-  --version 0.1.1 \
+  --version 0.1.2 \
   --namespace karpenter --create-namespace \
   --set spot.cloudspaceName=my-cloudspace \
   --set spot.refreshToken=$RXTSPOT_REFRESH_TOKEN
@@ -43,7 +43,7 @@ kubectl -n karpenter create secret generic karpenter-spot \
 
 helm install karpenter \
   oci://ghcr.io/kanya-approve/charts/karpenter-provider-rackspace-spot \
-  --version 0.1.1 \
+  --version 0.1.2 \
   --namespace karpenter \
   --set spot.cloudspaceName=my-cloudspace \
   --set spot.existingSecret=karpenter-spot

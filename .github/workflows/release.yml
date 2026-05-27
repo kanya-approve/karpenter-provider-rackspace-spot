@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write
 
 env:
   KO_DOCKER_REPO: ghcr.io/${{ github.repository }}
@@ -59,16 +60,28 @@ jobs:
 
       - uses: ko-build/setup-ko@v0.9
 
+      - uses: sigstore/cosign-installer@v3
+
       - name: Build & push image
         run: |
           ko build --bare ./cmd/controller \
             --platform=linux/amd64,linux/arm64 \
             --tags=${{ steps.versions.outputs.app-version }},latest
 
+      - name: Sign image (cosign keyless)
+        run: |
+          cosign sign --yes \
+            "ghcr.io/${{ github.repository }}:${{ steps.versions.outputs.app-version }}"
+
       - name: Push Helm chart to OCI registry
         run: |
           helm push "dist/karpenter-provider-rackspace-spot-${{ steps.versions.outputs.chart-version }}.tgz" \
             "oci://ghcr.io/${{ github.repository_owner }}/charts"
+
+      - name: Sign chart (cosign keyless)
+        run: |
+          cosign sign --yes \
+            "ghcr.io/${{ github.repository_owner }}/charts/karpenter-provider-rackspace-spot:${{ steps.versions.outputs.chart-version }}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3

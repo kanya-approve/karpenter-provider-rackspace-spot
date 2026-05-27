@@ -3,9 +3,9 @@ name: karpenter-provider-rackspace-spot
 description: Karpenter cloud provider for Rackspace Spot
 type: application
 # Chart version is independent of appVersion. Bump for any chart change.
-version: 0.1.1
+version: 0.1.2
 # appVersion tracks the controller image tag.
-appVersion: "0.1.1"
+appVersion: "0.1.2"
 kubeVersion: ">=1.29.0-0"
 home: https://github.com/kanya-approve/karpenter-provider-rackspace-spot
 sources:
@@ -19,7 +19,7 @@ keywords:
   - spot
   - kubernetes
 annotations:
-  artifacthub.io/category: integration-and-delivery
+  artifacthub.io/category: integration-delivery
   artifacthub.io/license: Apache-2.0
   artifacthub.io/links: |
     - name: source
@@ -31,7 +31,5 @@ annotations:
     - name: rackspace spot
       url: https://spot.rackspace.com
   artifacthub.io/changes: |
-    - kind: added
-      description: Bundle chart README so Artifact Hub renders package overview.
-    - kind: added
-      description: Artifact Hub metadata annotations.
+    - kind: fixed
+      description: Correct Artifact Hub category annotation (integration-delivery).
