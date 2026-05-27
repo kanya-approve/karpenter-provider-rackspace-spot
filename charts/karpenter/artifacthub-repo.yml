@@ -1,9 +1,1 @@
-# Artifact Hub repository metadata.
-#
-# After adding this OCI repo to Artifact Hub via the UI, paste the assigned
-# repositoryID below and push this file to the registry as a separate OCI
-# artifact (see hack/push-artifacthub-metadata.sh).
 repositoryID: fa913245-962b-4a43-a8aa-e87f17919fd4
-owners:
-  - name: kanya-approve
-    email: 6502571+kanya-approve@users.noreply.github.com
