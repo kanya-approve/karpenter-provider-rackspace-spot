@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/awslabs/operatorpkg/status"
 	rxtspot "github.com/rackspace-spot/spot-go-sdk/api/v1"
@@ -69,9 +70,23 @@ func (c *CloudProvider) IsDrifted(ctx context.Context, nc *karpv1.NodeClaim) (ka
 	return "", nil
 }
 
-// RepairPolicies: post-MVP — see issue #3.
+// RepairPolicies tells Karpenter which Node conditions warrant auto-
+// replacement and how long to tolerate them before triggering Delete +
+// re-provision. Standard set covers the unhealthy paths that should
+// almost never persist on a healthy spot/on-demand server:
+//   - kubelet stopped reporting (Ready=False or Unknown) — VM dead,
+//     kubelet crashed, runtime hung
+//   - networking lost — CNI broken, hypervisor partition
+//
+// 30 minutes is the convention from AWS / Azure / OCI providers: long
+// enough to ride out a brief blip but short enough that a wedged node
+// doesn't block its workloads for hours.
 func (c *CloudProvider) RepairPolicies() []karpcloudprovider.RepairPolicy {
-	return nil
+	return []karpcloudprovider.RepairPolicy{
+		{ConditionType: corev1.NodeReady, ConditionStatus: corev1.ConditionFalse, TolerationDuration: 30 * time.Minute},
+		{ConditionType: corev1.NodeReady, ConditionStatus: corev1.ConditionUnknown, TolerationDuration: 30 * time.Minute},
+		{ConditionType: corev1.NodeNetworkUnavailable, ConditionStatus: corev1.ConditionTrue, TolerationDuration: 30 * time.Minute},
+	}
 }
 
 func (c *CloudProvider) Create(ctx context.Context, nc *karpv1.NodeClaim) (*karpv1.NodeClaim, error) {
