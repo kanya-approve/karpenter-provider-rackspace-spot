@@ -1,22 +1,21 @@
-# karpenter-provider-rackspace-spot
+# Karpenter Provider for Rackspace Spot
 
-A Karpenter cloud provider for [Rackspace Spot](https://spot.rackspace.com) — provisions `SpotNodePool` and `OnDemandNodePool` resources in a Cloudspace in response to unschedulable pods, with smart bid pricing driven by Rackspace's published percentile feed.
+[![License](https://img.shields.io/github/license/kanya-approve/karpenter-provider-rackspace-spot)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/kanya-approve/karpenter-provider-rackspace-spot?sort=semver)](https://github.com/kanya-approve/karpenter-provider-rackspace-spot/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/kanya-approve/karpenter-provider-rackspace-spot/ci.yml?branch=main)](https://github.com/kanya-approve/karpenter-provider-rackspace-spot/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/kanya-approve/karpenter-provider-rackspace-spot)](https://goreportcard.com/report/github.com/kanya-approve/karpenter-provider-rackspace-spot)
 
-## Status
+A [Karpenter](https://karpenter.sh) cloud provider for [Rackspace Spot](https://spot.rackspace.com). Provisions `SpotNodePool` and `OnDemandNodePool` resources in a Cloudspace in response to unschedulable pods, with smart bid pricing driven by Rackspace's published percentile feed.
 
-Alpha. Driven end-to-end on a real Cloudspace; all core flows validated:
+**Status:** Alpha — driven end-to-end on a real Cloudspace, but APIs and chart values may shift before v1.0.
 
-- **Scale up** (spot + on-demand, single + multi-replica, mixed-shape workloads)
-- **Scale down** (consolidation drains nodes via the eviction API and deletes the underlying pool)
-- **Smart bidding** (`max(market, P{20,50,80}) × 1.05`, clamped to Rackspace's per-ServerClass `minBidPrice` floor, rounded to Rackspace's 3-dp / 2-dp-above-$0.05 precision rules)
-- **External pool delete recovery** (Karpenter's `registrationTimeout` triggers our `Delete`, the SDK returns 404, NodeClaim is cleaned up and replaced)
-- **Repair policies** (Node `Ready=False/Unknown` or `NetworkUnavailable=True` for 30+ min auto-replaces the node — gated behind Karpenter's `NodeRepair` feature gate, see [Enabling node repair](#enabling-node-repair))
+## Compatibility
 
-What's not in yet:
+| Provider | Karpenter core | Kubernetes  | Rackspace Spot SDK         |
+| -------- | -------------- | ----------- | -------------------------- |
+| v0.1.x   | v1.12.x        | v1.31+      | `spot-go-sdk` v0.2+        |
 
-- **[#2](https://github.com/kanya-approve/karpenter-provider-rackspace-spot/issues/2) Preemption webhook receiver** — Rackspace gives ~6 min notice via a push webhook; we don't run a receiver yet, so spot evictions are ungraceful (pods get hard-killed when the server vanishes).
-
-## Install
+## Installation
 
 ```sh
 helm install karpenter \
@@ -26,7 +25,9 @@ helm install karpenter \
   --set spot.refreshToken="$(awk '/refreshToken:/{print $2}' ~/.spot_config)"
 ```
 
-Or against the source tree for development:
+The chart ships the provider's `RackspaceSpotNodeClass` CRD and the upstream `karpenter.sh/v1` `NodePool` + `NodeClaim` CRDs.
+
+For development against the source tree:
 
 ```sh
 helm install karpenter charts/karpenter \
@@ -35,11 +36,19 @@ helm install karpenter charts/karpenter \
   --set spot.refreshToken="$RXTSPOT_REFRESH_TOKEN"
 ```
 
-Snapshot images (`:main`, `:sha-<commit>`) ship on every push to `main`; snapshot charts (`<chart-version>-main.<short-sha>`) ship only when `charts/**` changes. Tag releases (`v*.*.*`) publish plain-versioned images and charts.
+Snapshot images (`:main`, `:sha-<commit>`) ship on every push to `main`; snapshot charts (`<chart-version>-main.<short-sha>`) ship when `charts/**` changes. Tag releases (`v*.*.*`) publish plain-versioned images and charts.
 
-The chart's `crds/` ships both the provider's `RackspaceSpotNodeClass` CRD and the upstream `karpenter.sh/v1` `NodePool` + `NodeClaim` CRDs.
+## Documentation
 
-## Configure
+- [Configuration](#configuration)
+- [Bidding](#bidding)
+- [Workload affinity](#workload-affinity)
+- [Node repair (opt-in)](#node-repair-opt-in)
+- [Authentication](#authentication)
+- [Architecture notes](#architecture-notes)
+- [Development](#development)
+
+## Configuration
 
 A minimal NodeClass + NodePool pair that provisions spot capacity:
 
@@ -70,9 +79,9 @@ spec:
   disruption: {consolidationPolicy: WhenEmptyOrUnderutilized, consolidateAfter: 30s}
 ```
 
-See `config/samples/` for working manifests.
+Working manifests live in `config/samples/`.
 
-### Bidding
+## Bidding
 
 Every spot pool's bid is computed at Create time as `max(current_market, percentile) × 1.05`, clamped up to the ServerClass's `minBidPrice` floor and rounded to Rackspace's precision rules (≤3 decimal places, or multiples of $0.01 above $0.05). There is no user-set `bidPrice` field on the NodeClass — the only knob is which percentile of Rackspace's published 30-day distribution to bid at:
 
@@ -80,13 +89,13 @@ Every spot pool's bid is computed at Create time as `max(current_market, percent
 - `P50`: bid clears ~50%. Cheaper, more eviction-prone.
 - `P20`: cheapest, most eviction-prone.
 
-Cost ceilings should be expressed via `NodePool.limits` or `RackspaceSpotNodeClass.serverClassSelector`, not via a per-pool bid.
+Cost ceilings should be expressed via `NodePool.limits` or NodePool requirements on `node.kubernetes.io/instance-type`, not via a per-pool bid.
 
 Pricing data comes from [Rackspace's public S3 feed](https://ngpc-prod-public-data.s3.us-east-2.amazonaws.com/percentiles.json). The controller fetches it live (5-min cache) and falls back to an embedded snapshot at `pkg/providers/pricing/initial-prices.json` (refreshed weekly via `.github/workflows/update-pricing.yaml`).
 
-### Workload affinity — use `karpenter.sh/*` labels
+## Workload affinity
 
-The Rackspace/OpenStack cloud-controller overwrites `node.kubernetes.io/instance-type` (with the underlying VM SKU, e.g. `compute1-4`) and `topology.kubernetes.io/region` (with the OpenStack region code, e.g. `HKG`) post-registration. Workloads using `nodeSelector` or affinity should target:
+The Rackspace/OpenStack cloud-controller overwrites `node.kubernetes.io/instance-type` (with the underlying VM SKU, e.g. `compute1-4`) and `topology.kubernetes.io/region` (with the OpenStack region code, e.g. `HKG`) post-registration. Workloads using `nodeSelector` or affinity should target Karpenter-set labels instead:
 
 - `karpenter.sh/nodepool=<name>` — which NodePool spawned the node
 - `karpenter.sh/capacity-type=spot|on-demand` — what kind of capacity
@@ -95,9 +104,11 @@ The Rackspace/OpenStack cloud-controller overwrites `node.kubernetes.io/instance
 
 Don't filter on `node.kubernetes.io/instance-type=<ServerClass>` — the CCM clobbers it.
 
-### Enabling node repair
+## Node repair (opt-in)
 
-`RepairPolicies` returns a non-empty list, but Karpenter's `node.health` controller is gated behind the `NodeRepair` feature gate, which is **off by default upstream** (and off here too — a transient kubelet hiccup or control-plane blip can briefly flip many nodes to `Ready=Unknown`, and an over-eager repair controller would race to wipe them). To opt in:
+`RepairPolicies` returns a non-empty list (`Ready=False/Unknown` or `NetworkUnavailable=True` for 30+ min triggers replacement), but Karpenter's `node.health` controller is gated behind the `NodeRepair` feature gate, **off by default**. A transient kubelet hiccup or control-plane blip can briefly flip many nodes to `Ready=Unknown`, and an over-eager repair controller would race to wipe them; the conservative default leaves that decision to the operator.
+
+To opt in:
 
 ```sh
 helm upgrade karpenter ... \
@@ -107,22 +118,23 @@ helm upgrade karpenter ... \
 
 The full set has to be passed because `FEATURE_GATES` is parsed as a complete override, not a partial merge.
 
-### Authentication
+## Authentication
 
 The controller reads `SPOT_REFRESH_TOKEN` (and other `SPOT_*` env vars per [spot-go-sdk Config](https://github.com/rackspace-spot/spot-go-sdk/blob/main/api/v1/client.go)). The chart wires this from `spot.refreshToken` or `spot.existingSecret`.
 
-## Develop
+## What's verified
 
-```sh
-make generate     # regenerate CRDs + deepcopy; sync chart crds/
-make build        # build the controller binary
-make test         # unit tests (mocks via spot-go-sdk/api/v1/mocks)
-make image        # ko build + push (set KO_DOCKER_REPO and TAG)
-make chart-lint   # helm lint
-make update-pricing # refresh the embedded pricing snapshot from the S3 feed
-```
+| Flow | Notes |
+| ---- | ----- |
+| Scale up | spot + on-demand, single + multi-replica, mixed shapes |
+| Scale down | consolidation drains via eviction API, deletes the pool |
+| Smart bidding | percentile knob + `minBidPrice` floor clamp + precision rounding |
+| External pool delete recovery | `registrationTimeout` triggers `Delete`, NodeClaim replaced |
+| Node repair | Behind `NodeRepair` feature gate — see above |
 
-CI on PRs runs `make build`, `make test`, `make chart-lint`, `make chart-template`. The `Snapshot` workflow pushes `ghcr.io/kanya-approve/karpenter-provider-rackspace-spot:main` + `:sha-<commit>` on every push to `main`; tag releases (`v*.*.*`) publish versioned images and a Helm chart to `oci://ghcr.io/kanya-approve/charts`.
+## What's not yet in
+
+- **[#2](https://github.com/kanya-approve/karpenter-provider-rackspace-spot/issues/2) Preemption webhook receiver** — Rackspace gives ~6 min notice via a push webhook; we don't run a receiver yet, so spot evictions are ungraceful (pods get hard-killed when the server vanishes).
 
 ## Architecture notes
 
@@ -132,6 +144,27 @@ CI on PRs runs `make build`, `make test`, `make chart-lint`, `make chart-templat
 - **`karpenter.sh/v1` core CRDs ship with the chart.** The binary embeds `sigs.k8s.io/karpenter` and runs its core controllers (provisioning, disruption, nodeclaim, nodepool) alongside our `RackspaceSpotNodeClass` reconciler and the `nodelink` reconciler.
 - **`nodelink` reconciler bridges the providerID gap.** Rackspace's CCM sets `Node.spec.providerID = openstack:///<vm-uuid>`; our `Create()` returns `rackspacespot://<cs>/<kind>/<nodeclaim-uid>` because we don't know the VM UUID at create time (Rackspace's auction decouples bid acceptance from server assignment). When a Node joins carrying our `karpenter.rackspace.com/managed=true` label, `nodelink` patches the NodeClaim's `Status.ProviderID` to match the CCM-set value so Karpenter's lifecycle controller can complete the binding.
 
+## Development
+
+```sh
+make generate       # regenerate CRDs + deepcopy; sync chart crds/
+make build          # build the controller binary
+make test           # unit tests (mocks via spot-go-sdk/api/v1/mocks)
+make image          # ko build + push (set KO_DOCKER_REPO and TAG)
+make chart-lint     # helm lint
+make update-pricing # refresh the embedded pricing snapshot from the S3 feed
+```
+
+CI runs `make build`, `make test`, `make chart-lint`, `make chart-template` on every PR.
+
+## Contributing
+
+Issues and pull requests welcome at [github.com/kanya-approve/karpenter-provider-rackspace-spot](https://github.com/kanya-approve/karpenter-provider-rackspace-spot).
+
+## Attribution
+
+Layout and conventions modeled after [`oracle/karpenter-provider-oci`](https://github.com/oracle/karpenter-provider-oci) and [`aws/karpenter-provider-aws`](https://github.com/aws/karpenter-provider-aws).
+
 ## License
 
-Apache-2.0. See `LICENSE`.
+Apache-2.0. See [LICENSE](LICENSE).
