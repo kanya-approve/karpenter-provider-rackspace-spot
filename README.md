@@ -9,32 +9,46 @@ A [Karpenter](https://karpenter.sh) cloud provider for [Rackspace Spot](https://
 
 **Status:** Alpha — driven end-to-end on a real Cloudspace, but APIs and chart values may shift before v1.0.
 
-## Compatibility
+## Requirements
 
-| Provider | Karpenter core | Kubernetes  | Rackspace Spot SDK         |
-| -------- | -------------- | ----------- | -------------------------- |
-| v0.1.x   | v1.12.x        | v1.31+      | `spot-go-sdk` v0.2+        |
+- A Rackspace Spot account and at least one Cloudspace (the target Kubernetes cluster).
+- A Rackspace Spot OAuth refresh token (from your account profile in the [Rackspace Spot console](https://spot.rackspace.com)).
+- `helm` 3.8+ (for OCI chart support).
+- Kubernetes v1.31+ inside the Cloudspace.
+
+| Provider | Karpenter core | Kubernetes | Rackspace Spot SDK    |
+| -------- | -------------- | ---------- | --------------------- |
+| v0.1.x   | v1.12.x        | v1.31+     | `spot-go-sdk` v0.2+   |
 
 ## Installation
 
+Grab a refresh token from your Rackspace Spot account page, then install with one of:
+
 ```sh
+# inline (token from env var or pasted directly)
 helm install karpenter \
   oci://ghcr.io/kanya-approve/charts/karpenter-provider-rackspace-spot \
   --version 0.1.0 \
   --namespace karpenter --create-namespace \
-  --set spot.refreshToken="$(awk '/refreshToken:/{print $2}' ~/.spot_config)"
+  --set spot.refreshToken=$RXTSPOT_REFRESH_TOKEN
+```
+
+```sh
+# pre-existing secret
+kubectl create namespace karpenter
+kubectl -n karpenter create secret generic karpenter-spot \
+  --from-literal=refreshToken=$RXTSPOT_REFRESH_TOKEN
+
+helm install karpenter \
+  oci://ghcr.io/kanya-approve/charts/karpenter-provider-rackspace-spot \
+  --version 0.1.0 \
+  --namespace karpenter \
+  --set spot.existingSecret=karpenter-spot
 ```
 
 The chart ships the provider's `RackspaceSpotNodeClass` CRD and the upstream `karpenter.sh/v1` `NodePool` + `NodeClaim` CRDs.
 
-For development against the source tree:
-
-```sh
-helm install karpenter charts/karpenter \
-  --namespace karpenter --create-namespace \
-  --set image.tag=main \
-  --set spot.refreshToken="$RXTSPOT_REFRESH_TOKEN"
-```
+For development against the source tree, swap `oci://...` for `charts/karpenter` and `--set image.tag=main`.
 
 Snapshot images (`:main`, `:sha-<commit>`) ship on every push to `main`; snapshot charts (`<chart-version>-main.<short-sha>`) ship when `charts/**` changes. Tag releases (`v*.*.*`) publish plain-versioned images and charts.
 
@@ -157,14 +171,26 @@ make update-pricing # refresh the embedded pricing snapshot from the S3 feed
 
 CI runs `make build`, `make test`, `make chart-lint`, `make chart-template` on every PR.
 
+## Community
+
+- Karpenter discussion and troubleshooting: [#karpenter](https://kubernetes.slack.com/archives/C02SFFZSA2K) in the [Kubernetes Slack](https://slack.k8s.io/).
+- Bug reports and feature requests: [GitHub Issues](https://github.com/kanya-approve/karpenter-provider-rackspace-spot/issues).
+
 ## Contributing
 
-Issues and pull requests welcome at [github.com/kanya-approve/karpenter-provider-rackspace-spot](https://github.com/kanya-approve/karpenter-provider-rackspace-spot).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the pull-request workflow and dev setup.
 
-## Attribution
+## Code of Conduct
 
-Layout and conventions modeled after [`oracle/karpenter-provider-oci`](https://github.com/oracle/karpenter-provider-oci) and [`aws/karpenter-provider-aws`](https://github.com/aws/karpenter-provider-aws).
+Participation in this project is governed by the [Code of Conduct](CODE_OF_CONDUCT.md), adapted from Contributor Covenant 1.4.
+
+## References
+
+- [Karpenter](https://karpenter.sh) — the upstream autoscaler this provider plugs into.
+- [Rackspace Spot](https://spot.rackspace.com) — the platform we provision against.
+- [spot-go-sdk](https://github.com/rackspace-spot/spot-go-sdk) — official Go SDK for Rackspace Spot.
+- Layout and conventions modeled after [`oracle/karpenter-provider-oci`](https://github.com/oracle/karpenter-provider-oci), [`aws/karpenter-provider-aws`](https://github.com/aws/karpenter-provider-aws), and [`sergelogvinov/karpenter-provider-proxmox`](https://github.com/sergelogvinov/karpenter-provider-proxmox).
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
