@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"time"
 
-	rxtspot "github.com/rackspace-spot/spot-go-sdk/api/v1"
 	"github.com/samber/lo"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -26,33 +25,31 @@ import (
 	karpcloudprovider "sigs.k8s.io/karpenter/pkg/cloudprovider"
 
 	apiv1 "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/apis/v1"
-	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/instance"
 	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/instancetype"
 )
 
 // requeueAfter is the steady-state polling interval used to refresh
-// ServerClass discovery and detect Cloudspace-side changes.
+// ServerClass discovery.
 const requeueAfter = 5 * time.Minute
 
-// Controller reconciles RackspaceSpotNodeClass: validates the referenced
-// Cloudspace exists, caches its region, and refreshes the eligible
-// ServerClass list into Status.
+// Controller reconciles RackspaceSpotNodeClass: refreshes the eligible
+// ServerClass list into Status. The Cloudspace itself is operator-level
+// configuration, not per-NodeClass, so no per-NodeClass cloudspace lookup
+// happens here.
 //
 // +kubebuilder:rbac:groups=karpenter.rackspace.com,resources=rackspacespotnodeclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=karpenter.rackspace.com,resources=rackspacespotnodeclasses/status,verbs=patch;update
 type Controller struct {
 	kubeClient   client.Client
-	spotAPI      rxtspot.SpotAPI
-	instances    instance.Provider
 	instanceType instancetype.Provider
+	region       string
 }
 
-func NewController(kubeClient client.Client, spotAPI rxtspot.SpotAPI, instances instance.Provider, instanceType instancetype.Provider) *Controller {
+func NewController(kubeClient client.Client, instanceType instancetype.Provider, region string) *Controller {
 	return &Controller{
 		kubeClient:   kubeClient,
-		spotAPI:      spotAPI,
-		instances:    instances,
 		instanceType: instanceType,
+		region:       region,
 	}
 }
 
@@ -72,13 +69,9 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 	original := nc.DeepCopy()
 
-	if err := c.reconcileCloudspace(ctx, &nc); err != nil {
-		logger.Error(err, "cloudspace lookup failed")
-	}
-	if nc.Status.Region != "" {
-		if err := c.reconcileServerClasses(ctx, &nc); err != nil {
-			logger.Error(err, "server class discovery failed")
-		}
+	nc.Status.Region = c.region
+	if err := c.reconcileServerClasses(ctx, &nc); err != nil {
+		logger.Error(err, "server class discovery failed")
 	}
 
 	if err := c.patchStatus(ctx, original, &nc); err != nil {
@@ -87,28 +80,8 @@ func (c *Controller) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	return reconcile.Result{RequeueAfter: requeueAfter}, nil
 }
 
-func (c *Controller) reconcileCloudspace(ctx context.Context, nc *apiv1.RackspaceSpotNodeClass) error {
-	if nc.Spec.CloudspaceName == "" {
-		nc.StatusConditions().SetFalse(apiv1.ConditionTypeCloudspaceFound, "MissingCloudspaceName", "spec.cloudspaceName is empty")
-		return nil
-	}
-	org, err := c.instances.OrganizationID(ctx)
-	if err != nil {
-		nc.StatusConditions().SetFalse(apiv1.ConditionTypeCloudspaceFound, "OrganizationLookupFailed", err.Error())
-		return err
-	}
-	cs, err := c.spotAPI.GetCloudspace(ctx, org, nc.Spec.CloudspaceName)
-	if err != nil {
-		nc.StatusConditions().SetFalse(apiv1.ConditionTypeCloudspaceFound, "GetCloudspaceFailed", err.Error())
-		return err
-	}
-	nc.Status.Region = cs.Region
-	nc.StatusConditions().SetTrue(apiv1.ConditionTypeCloudspaceFound)
-	return nil
-}
-
 func (c *Controller) reconcileServerClasses(ctx context.Context, nc *apiv1.RackspaceSpotNodeClass) error {
-	its, err := c.instanceType.List(ctx, nc.Status.Region)
+	its, err := c.instanceType.List(ctx, c.region)
 	if err != nil {
 		nc.StatusConditions().SetFalse(apiv1.ConditionTypeServerClassesDiscovered, "ListServerClassesFailed", err.Error())
 		return err

@@ -14,10 +14,15 @@ serviceAccount:
   create: true
   name: ""            # defaults to the fullname when empty
 
-# Rackspace Spot credentials. You can either:
+# Rackspace Spot credentials + target Cloudspace. You can either:
 #   (a) inline the refresh token via spot.refreshToken (a Secret is rendered)
 #   (b) reference an existing Secret you created out of band
 spot:
+  # Cloudspace this operator manages. Required — the operator panics on
+  # startup if empty. Each Cloudspace is its own Kubernetes cluster, so one
+  # Helm install runs one operator for one Cloudspace.
+  cloudspaceName: ""
+
   # Inline path: supply a refresh token; the chart will render a Secret.
   refreshToken: ""
   # External path: name of an existing Secret with a key SPOT_REFRESH_TOKEN.

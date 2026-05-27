@@ -97,8 +97,7 @@ func newNodeClass(extraLabels map[string]string) *apiv1.RackspaceSpotNodeClass {
 	return &apiv1.RackspaceSpotNodeClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "default"},
 		Spec: apiv1.RackspaceSpotNodeClassSpec{
-			CloudspaceName: testCloudspace,
-			Labels:         extraLabels,
+			Labels: extraLabels,
 		},
 	}
 }
@@ -163,10 +162,7 @@ func TestDeriveCapacityType_DefaultsToOnDemand(t *testing.T) {
 func TestCreateSpot_HappyPath(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
-	p := NewProvider(api, &stubPricing{}, &stubInstanceType{})
-
-	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
-		Return([]rxtspot.Organization{{ID: testOrgID, Name: "test"}}, nil)
+	p := NewProvider(api, &stubPricing{}, &stubInstanceType{}, testCloudspace, testOrgID)
 
 	var captured rxtspot.SpotNodePool
 	api.MockSpotNodePoolAPI.EXPECT().
@@ -217,7 +213,7 @@ func TestCreateSpot_HappyPath(t *testing.T) {
 }
 
 func TestChooseBidPrice_MarketPlusHeadroomFallback(t *testing.T) {
-	p := NewProvider(newAPI(gomock.NewController(t)), &stubPricing{}, &stubInstanceType{})
+	p := NewProvider(newAPI(gomock.NewController(t)), &stubPricing{}, &stubInstanceType{}, testCloudspace, testOrgID)
 	got, err := p.chooseBidPrice(context.Background(), newNodeClass(nil), newInstanceTypes()[0])
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -228,7 +224,7 @@ func TestChooseBidPrice_MarketPlusHeadroomFallback(t *testing.T) {
 }
 
 func TestChooseBidPrice_NoSpotOffering(t *testing.T) {
-	p := NewProvider(newAPI(gomock.NewController(t)), &stubPricing{}, &stubInstanceType{})
+	p := NewProvider(newAPI(gomock.NewController(t)), &stubPricing{}, &stubInstanceType{}, testCloudspace, testOrgID)
 	it := &karpcloudprovider.InstanceType{Name: testServerCls} // no offerings
 	if _, err := p.chooseBidPrice(context.Background(), newNodeClass(nil), it); err == nil {
 		t.Error("expected error when no spot offering, got nil")
@@ -238,10 +234,8 @@ func TestChooseBidPrice_NoSpotOffering(t *testing.T) {
 func TestCreateOnDemand_HappyPath(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
-	p := NewProvider(api, &stubPricing{}, &stubInstanceType{})
+	p := NewProvider(api, &stubPricing{}, &stubInstanceType{}, testCloudspace, testOrgID)
 
-	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
-		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
 	api.MockOnDemandNodePoolAPI.EXPECT().
 		CreateOnDemandNodePool(gomock.Any(), testOrgID, gomock.Any()).Return(nil)
 	api.MockOnDemandNodePoolAPI.EXPECT().
@@ -270,10 +264,8 @@ func TestCreateOnDemand_HappyPath(t *testing.T) {
 func TestCreate_IdempotentOnAlreadyExists(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
-	p := NewProvider(api, &stubPricing{}, &stubInstanceType{})
+	p := NewProvider(api, &stubPricing{}, &stubInstanceType{}, testCloudspace, testOrgID)
 
-	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
-		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
 	api.MockSpotNodePoolAPI.EXPECT().
 		CreateSpotNodePool(gomock.Any(), testOrgID, gomock.Any()).
 		Return(errors.New("HTTP 409: AlreadyExists"))
@@ -294,10 +286,8 @@ func TestCreate_IdempotentOnAlreadyExists(t *testing.T) {
 func TestDelete_NotFoundMapsToErrPoolNotFound(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
-	p := NewProvider(api, &stubPricing{}, &stubInstanceType{})
+	p := NewProvider(api, &stubPricing{}, &stubInstanceType{}, testCloudspace, testOrgID)
 
-	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
-		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
 	api.MockSpotNodePoolAPI.EXPECT().
 		DeleteSpotNodePool(gomock.Any(), testOrgID, "karpenter-uid-5").
 		Return(errors.New("HTTP 404: NotFound"))
@@ -311,10 +301,8 @@ func TestDelete_NotFoundMapsToErrPoolNotFound(t *testing.T) {
 func TestList_FiltersForeignPools(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
-	p := NewProvider(api, &stubPricing{}, &stubInstanceType{})
+	p := NewProvider(api, &stubPricing{}, &stubInstanceType{}, testCloudspace, testOrgID)
 
-	api.MockOrganizationAPI.EXPECT().ListOrganizations(gomock.Any()).
-		Return([]rxtspot.Organization{{ID: testOrgID}}, nil)
 	karpLabel := map[string]string{KarpenterManagedLabel: "true"}
 	api.MockSpotNodePoolAPI.EXPECT().
 		ListSpotNodePools(gomock.Any(), testOrgID, testCloudspace).
@@ -328,7 +316,7 @@ func TestList_FiltersForeignPools(t *testing.T) {
 			{Name: "b-karpenter-pool", Cloudspace: testCloudspace, ServerClass: testServerCls, CustomLabels: karpLabel},
 		}, nil)
 
-	pools, err := p.List(context.Background(), testCloudspace)
+	pools, err := p.List(context.Background())
 	if err != nil {
 		t.Fatalf("List returned error: %v", err)
 	}

@@ -42,6 +42,8 @@ spec:
             - secretRef:
                 name: {{ include "karpenter.secretName" . }}
           env:
+            - name: SPOT_CLOUDSPACE_NAME
+              value: {{ required "spot.cloudspaceName is required" .Values.spot.cloudspaceName | quote }}
             {{- if .Values.spot.baseURL }}
             - name: SPOT_BASE_URL
               value: {{ .Values.spot.baseURL | quote }}

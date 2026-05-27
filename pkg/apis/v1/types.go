@@ -16,14 +16,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// RackspaceSpotNodeClass binds a Karpenter NodePool to a specific Rackspace
-// Spot Cloudspace and selects which ServerClasses (instance types) are
-// eligible for provisioning.
+// RackspaceSpotNodeClass selects which Rackspace ServerClasses (instance
+// types) are eligible for provisioning and customizes labels/taints/
+// annotations on the resulting pools. The Cloudspace itself is configured
+// once at operator startup (SPOT_CLOUDSPACE_NAME env var) — not on the
+// NodeClass.
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:path=rackspacespotnodeclasses,scope=Cluster,categories=karpenter,shortName={rsnc,rsncs}
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Cloudspace",type="string",JSONPath=".spec.cloudspaceName"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 type RackspaceSpotNodeClass struct {
@@ -46,14 +47,6 @@ type RackspaceSpotNodeClassList struct {
 // RackspaceSpotNodeClassSpec is the user-facing configuration for a
 // RackspaceSpotNodeClass.
 type RackspaceSpotNodeClassSpec struct {
-	// CloudspaceName is the Rackspace Spot Cloudspace into which pools are
-	// provisioned. The Cloudspace must exist before the NodeClass is
-	// referenced by a NodePool.
-	//
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	CloudspaceName string `json:"cloudspaceName"`
-
 	// ServerClassSelector narrows which ServerClasses are considered when
 	// scheduling. If unset, all ServerClasses in the Cloudspace's region are
 	// eligible.
@@ -94,7 +87,7 @@ type RackspaceSpotNodeClassSpec struct {
 // RackspaceSpotNodeClassStatus reflects observed state.
 type RackspaceSpotNodeClassStatus struct {
 	// Conditions represent the latest observations of the NodeClass state.
-	// Standard types include "Ready", "CloudspaceFound", "ServerClassesDiscovered".
+	// Standard types include "Ready" and "ServerClassesDiscovered".
 	//
 	// +optional
 	// +listType=map

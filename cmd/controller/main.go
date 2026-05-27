@@ -33,7 +33,7 @@ func main() {
 	clusterState := state.NewCluster(op.Clock, op.GetClient(), cp)
 
 	providerControllers := []opcontroller.Controller{
-		nodeclass.NewController(op.GetClient(), op.SpotClient, op.InstanceProvider, op.InstanceTypeProvider),
+		nodeclass.NewController(op.GetClient(), op.InstanceTypeProvider, op.Region),
 		nodelink.NewController(op.GetClient()),
 	}
 

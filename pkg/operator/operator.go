@@ -13,6 +13,7 @@ package operator
 import (
 	"context"
 	"fmt"
+	"os"
 
 	rxtspot "github.com/rackspace-spot/spot-go-sdk/api/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -37,16 +38,30 @@ type Operator struct {
 	// SpotClient is the authenticated Rackspace Spot API client.
 	SpotClient rxtspot.SpotAPI
 
+	// CloudspaceName identifies the single Cloudspace this operator manages.
+	// Read from SPOT_CLOUDSPACE_NAME at startup; required.
+	CloudspaceName string
+	// Region is the Cloudspace's region, resolved once at startup via the SDK.
+	Region string
+	// OrganizationID is the Rackspace org owning the Cloudspace, resolved once.
+	OrganizationID string
+
 	InstanceProvider     instance.Provider
 	InstanceTypeProvider instancetype.Provider
 	PricingProvider      pricing.Provider
 }
 
 // NewOperator builds the provider Operator. The Rackspace refresh token is
-// read from the SPOT_REFRESH_TOKEN env var (and other SPOT_* env vars per the
-// spot-go-sdk Config).
+// read from SPOT_REFRESH_TOKEN; the target Cloudspace from SPOT_CLOUDSPACE_NAME.
+// The operator validates both by calling the SDK at startup and panics on
+// failure — there's nothing to do if either is wrong.
 func NewOperator(ctx context.Context, coreOp *karpoperator.Operator) (context.Context, *Operator) {
 	logger := log.FromContext(ctx)
+
+	cloudspaceName := os.Getenv("SPOT_CLOUDSPACE_NAME")
+	if cloudspaceName == "" {
+		panic("SPOT_CLOUDSPACE_NAME environment variable is required")
+	}
 
 	client, err := rxtspot.NewSpotClient(nil)
 	if err != nil {
@@ -59,12 +74,33 @@ func NewOperator(ctx context.Context, coreOp *karpoperator.Operator) (context.Co
 	}
 	logger.Info("authenticated to Rackspace Spot")
 
+	orgs, err := client.ListOrganizations(ctx)
+	if err != nil {
+		panic(fmt.Errorf("listing organizations: %w", err))
+	}
+	if len(orgs) == 0 {
+		panic("authenticated principal has no organizations")
+	}
+	orgID := orgs[0].ID
+
+	cs, err := client.GetCloudspace(ctx, orgID, cloudspaceName)
+	if err != nil {
+		panic(fmt.Errorf("cloudspace %q not found in org %q: %w", cloudspaceName, orgID, err))
+	}
+	if cs.Region == "" {
+		panic(fmt.Errorf("cloudspace %q has no region", cloudspaceName))
+	}
+	logger.Info("resolved cloudspace", "name", cloudspaceName, "region", cs.Region)
+
 	pricingProvider := pricing.NewProvider()
 	instanceTypeProvider := instancetype.NewProvider(client)
 	return ctx, &Operator{
 		Operator:             coreOp,
 		SpotClient:           client,
-		InstanceProvider:     instance.NewProvider(client, pricingProvider, instanceTypeProvider),
+		CloudspaceName:       cloudspaceName,
+		Region:               cs.Region,
+		OrganizationID:       orgID,
+		InstanceProvider:     instance.NewProvider(client, pricingProvider, instanceTypeProvider, cloudspaceName, orgID),
 		InstanceTypeProvider: instanceTypeProvider,
 		PricingProvider:      pricingProvider,
 	}

@@ -18,8 +18,6 @@ import (
 	"time"
 
 	"github.com/awslabs/operatorpkg/status"
-	rxtspot "github.com/rackspace-spot/spot-go-sdk/api/v1"
-	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -45,7 +43,8 @@ type CloudProvider struct {
 	kubeClient   client.Client
 	instances    instance.Provider
 	instanceType instancetype.Provider
-	spotAPI      rxtspot.SpotAPI
+	cloudspace   string
+	region       string
 }
 
 var _ karpcloudprovider.CloudProvider = (*CloudProvider)(nil)
@@ -55,7 +54,8 @@ func New(op *operator.Operator) *CloudProvider {
 		kubeClient:   op.GetClient(),
 		instances:    op.InstanceProvider,
 		instanceType: op.InstanceTypeProvider,
-		spotAPI:      op.SpotClient,
+		cloudspace:   op.CloudspaceName,
+		region:       op.Region,
 	}
 }
 
@@ -66,7 +66,7 @@ func (c *CloudProvider) GetSupportedNodeClasses() []status.Object {
 }
 
 // IsDrifted is a no-op for this provider. Rackspace pools have no
-// node-immutable spec fields worth a roll: CloudspaceName is fixed per
+// node-immutable spec fields worth a roll: the Cloudspace is fixed per
 // operator deploy, Labels/Annotations/Taints can be mutated in-place on
 // the Node, and the bid is locked at pool create time. If a real drift
 // surface emerges later, implement it then.
@@ -99,12 +99,7 @@ func (c *CloudProvider) Create(ctx context.Context, nc *karpv1.NodeClaim) (*karp
 		return nil, fmt.Errorf("resolving node class: %w", err)
 	}
 
-	region, err := c.cloudspaceRegion(ctx, nodeClass)
-	if err != nil {
-		return nil, fmt.Errorf("resolving cloudspace region: %w", err)
-	}
-
-	instType, capacityType, err := c.pickInstanceType(ctx, nc, region)
+	instType, capacityType, err := c.pickInstanceType(ctx, nc, c.region)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +109,7 @@ func (c *CloudProvider) Create(ctx context.Context, nc *karpv1.NodeClaim) (*karp
 		return nil, fmt.Errorf("creating pool: %w", err)
 	}
 
-	return c.hydrateClaim(nc, pool, instType, capacityType, region), nil
+	return c.hydrateClaim(nc, pool, instType, capacityType, c.region), nil
 }
 
 func (c *CloudProvider) Delete(ctx context.Context, nc *karpv1.NodeClaim) error {
@@ -126,15 +121,11 @@ func (c *CloudProvider) Delete(ctx context.Context, nc *karpv1.NodeClaim) error 
 	// openstack:///<vm-uuid> form, which doesn't carry pool kind/name.
 	poolName := string(nc.UID)
 	capacityType := requirementValue(nc, karpv1.CapacityTypeLabelKey)
-	cloudspace, err := c.cloudspaceForClaim(ctx, nc)
-	if err != nil {
-		return err
-	}
 	kind := instance.PoolTypeSpot
 	if capacityType == karpv1.CapacityTypeOnDemand {
 		kind = instance.PoolTypeOnDemand
 	}
-	if err := c.instances.Delete(ctx, instance.MakeProviderID(cloudspace, kind, poolName)); err != nil {
+	if err := c.instances.Delete(ctx, instance.MakeProviderID(c.cloudspace, kind, poolName)); err != nil {
 		if errors.Is(err, instance.ErrPoolNotFound) {
 			return karpcloudprovider.NewNodeClaimNotFoundError(err)
 		}
@@ -167,15 +158,11 @@ func (c *CloudProvider) Get(ctx context.Context, providerID string) (*karpv1.Nod
 		}
 		nodeClaimUID := nodes.Items[i].Labels[instance.NodeClaimUIDLabel]
 		capacityType := nodes.Items[i].Labels[karpv1.CapacityTypeLabelKey]
-		cloudspace, err := c.cloudspaceForNode(ctx, &nodes.Items[i])
-		if err != nil {
-			return nil, err
-		}
 		kind := instance.PoolTypeSpot
 		if capacityType == karpv1.CapacityTypeOnDemand {
 			kind = instance.PoolTypeOnDemand
 		}
-		pool, err := c.instances.Get(ctx, instance.MakeProviderID(cloudspace, kind, nodeClaimUID))
+		pool, err := c.instances.Get(ctx, instance.MakeProviderID(c.cloudspace, kind, nodeClaimUID))
 		if err != nil {
 			if errors.Is(err, instance.ErrPoolNotFound) {
 				return nil, karpcloudprovider.NewNodeClaimNotFoundError(err)
@@ -190,13 +177,10 @@ func (c *CloudProvider) Get(ctx context.Context, providerID string) (*karpv1.Nod
 }
 
 func (c *CloudProvider) List(ctx context.Context) ([]*karpv1.NodeClaim, error) {
-	var classes apiv1.RackspaceSpotNodeClassList
-	if err := c.kubeClient.List(ctx, &classes); err != nil {
-		return nil, fmt.Errorf("listing RackspaceSpotNodeClasses: %w", err)
+	pools, err := c.instances.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing pools in cloudspace %s: %w", c.cloudspace, err)
 	}
-	cloudspaces := lo.Uniq(lo.Map(classes.Items, func(nc apiv1.RackspaceSpotNodeClass, _ int) string {
-		return nc.Spec.CloudspaceName
-	}))
 
 	// Index managed Nodes by NodeClaim UID so we can substitute their
 	// CCM-set providerID into the NodeClaim we return — otherwise
@@ -213,65 +197,22 @@ func (c *CloudProvider) List(ctx context.Context) ([]*karpv1.NodeClaim, error) {
 		}
 	}
 
-	var claims []*karpv1.NodeClaim
-	for _, cs := range cloudspaces {
-		if cs == "" {
-			continue
+	claims := make([]*karpv1.NodeClaim, 0, len(pools))
+	for _, p := range pools {
+		nc := c.poolToClaim(ctx, p)
+		if node, ok := nodeByUID[p.Labels[instance.NodeClaimUIDLabel]]; ok && node.Spec.ProviderID != "" {
+			nc.Status.ProviderID = node.Spec.ProviderID
 		}
-		pools, err := c.instances.List(ctx, cs)
-		if err != nil {
-			return nil, fmt.Errorf("listing pools in cloudspace %s: %w", cs, err)
-		}
-		for _, p := range pools {
-			nc := c.poolToClaim(ctx, p)
-			if node, ok := nodeByUID[p.Labels[instance.NodeClaimUIDLabel]]; ok && node.Spec.ProviderID != "" {
-				nc.Status.ProviderID = node.Spec.ProviderID
-			}
-			claims = append(claims, nc)
-		}
+		claims = append(claims, nc)
 	}
 	return claims, nil
-}
-
-// cloudspaceForClaim picks the Cloudspace name the NodeClaim was provisioned
-// into. The NodeClaim itself doesn't carry it, so resolve via NodeClassRef.
-func (c *CloudProvider) cloudspaceForClaim(ctx context.Context, nc *karpv1.NodeClaim) (string, error) {
-	nodeClass, err := c.resolveNodeClass(ctx, nc)
-	if err != nil {
-		return "", err
-	}
-	return nodeClass.Spec.CloudspaceName, nil
-}
-
-// cloudspaceForNode picks the Cloudspace by listing our NodeClasses and
-// finding one whose region matches the Node. Cheap fallback when we don't
-// have the NodeClaim handy.
-func (c *CloudProvider) cloudspaceForNode(ctx context.Context, _ *corev1.Node) (string, error) {
-	var classes apiv1.RackspaceSpotNodeClassList
-	if err := c.kubeClient.List(ctx, &classes); err != nil {
-		return "", fmt.Errorf("listing RackspaceSpotNodeClasses: %w", err)
-	}
-	for _, cl := range classes.Items {
-		if cl.Spec.CloudspaceName != "" {
-			return cl.Spec.CloudspaceName, nil // single-Cloudspace MVP — first wins
-		}
-	}
-	return "", errors.New("no RackspaceSpotNodeClass with a cloudspaceName")
 }
 
 func (c *CloudProvider) GetInstanceTypes(ctx context.Context, nodePool *karpv1.NodePool) ([]*karpcloudprovider.InstanceType, error) {
 	if nodePool == nil || nodePool.Spec.Template.Spec.NodeClassRef == nil {
 		return nil, nil
 	}
-	var nodeClass apiv1.RackspaceSpotNodeClass
-	if err := c.kubeClient.Get(ctx, types.NamespacedName{Name: nodePool.Spec.Template.Spec.NodeClassRef.Name}, &nodeClass); err != nil {
-		return nil, fmt.Errorf("getting NodeClass %q: %w", nodePool.Spec.Template.Spec.NodeClassRef.Name, err)
-	}
-	region, err := c.cloudspaceRegion(ctx, &nodeClass)
-	if err != nil {
-		return nil, fmt.Errorf("resolving cloudspace region: %w", err)
-	}
-	return c.instanceType.List(ctx, region)
+	return c.instanceType.List(ctx, c.region)
 }
 
 // ---- helpers ----
@@ -288,30 +229,6 @@ func (c *CloudProvider) resolveNodeClass(ctx context.Context, nc *karpv1.NodeCla
 		return nil, fmt.Errorf("getting RackspaceSpotNodeClass %q: %w", nc.Spec.NodeClassRef.Name, err)
 	}
 	return &nodeClass, nil
-}
-
-// cloudspaceRegion returns the region of the Cloudspace referenced by the
-// NodeClass, preferring the cached value in NodeClass.Status.Region and
-// falling back to a live SDK lookup.
-func (c *CloudProvider) cloudspaceRegion(ctx context.Context, nc *apiv1.RackspaceSpotNodeClass) (string, error) {
-	if nc.Status.Region != "" {
-		return nc.Status.Region, nil
-	}
-	if nc.Spec.CloudspaceName == "" {
-		return "", errors.New("NodeClass has no cloudspaceName")
-	}
-	org, err := c.instances.OrganizationID(ctx)
-	if err != nil {
-		return "", err
-	}
-	cs, err := c.spotAPI.GetCloudspace(ctx, org, nc.Spec.CloudspaceName)
-	if err != nil {
-		return "", fmt.Errorf("getting cloudspace %s: %w", nc.Spec.CloudspaceName, err)
-	}
-	if cs.Region == "" {
-		return "", fmt.Errorf("cloudspace %s has no region", nc.Spec.CloudspaceName)
-	}
-	return cs.Region, nil
 }
 
 func (c *CloudProvider) pickInstanceType(ctx context.Context, nc *karpv1.NodeClaim, region string) (*karpcloudprovider.InstanceType, string, error) {

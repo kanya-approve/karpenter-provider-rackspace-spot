@@ -13,7 +13,6 @@ package v1
 import "github.com/awslabs/operatorpkg/status"
 
 const (
-	ConditionTypeCloudspaceFound         = "CloudspaceFound"
 	ConditionTypeServerClassesDiscovered = "ServerClassesDiscovered"
 )
 
@@ -27,7 +26,6 @@ func (n *RackspaceSpotNodeClass) SetConditions(conditions []status.Condition) {
 
 func (n *RackspaceSpotNodeClass) StatusConditions() status.ConditionSet {
 	return status.NewReadyConditions(
-		ConditionTypeCloudspaceFound,
 		ConditionTypeServerClassesDiscovered,
 	).For(n)
 }

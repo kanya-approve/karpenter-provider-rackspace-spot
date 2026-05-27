@@ -3,7 +3,6 @@ kind: RackspaceSpotNodeClass
 metadata:
   name: default
 spec:
-  cloudspaceName: my-cloudspace
   labels:
     team: platform
   # Optional: narrow the eligible ServerClasses by category, region, etc.

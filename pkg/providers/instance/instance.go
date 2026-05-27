@@ -17,7 +17,6 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"sync"
 
 	rxtspot "github.com/rackspace-spot/spot-go-sdk/api/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -69,11 +68,10 @@ type Provider interface {
 	Create(ctx context.Context, nodeClass *apiv1.RackspaceSpotNodeClass, nodeClaim *karpv1.NodeClaim, instanceTypes []*karpcloudprovider.InstanceType) (*Pool, error)
 	Get(ctx context.Context, providerID string) (*Pool, error)
 	Delete(ctx context.Context, providerID string) error
-	List(ctx context.Context, cloudspace string) ([]*Pool, error)
-	// OrganizationID returns the (cached) Rackspace org ID derived from the
-	// authenticated principal. Other packages need it to call Cloudspace and
-	// other org-scoped SDK endpoints.
-	OrganizationID(ctx context.Context) (string, error)
+	List(ctx context.Context) ([]*Pool, error)
+	// Cloudspace returns the single Cloudspace name this provider was
+	// configured with at operator startup.
+	Cloudspace() string
 }
 
 // API is the narrow subset of the rxtspot SDK the instance provider depends
@@ -89,17 +87,25 @@ type API interface {
 type DefaultProvider struct {
 	spot         rxtspot.SpotNodePoolAPI
 	onDemand     rxtspot.OnDemandNodePoolAPI
-	orgs         rxtspot.OrganizationAPI
 	pricing      pricing.Provider
 	instanceType instancetype.Provider
 
-	orgMu sync.Mutex
-	org   string
+	cloudspace string
+	org        string
 }
 
-func NewProvider(api API, pricingProvider pricing.Provider, instanceTypeProvider instancetype.Provider) *DefaultProvider {
-	return &DefaultProvider{spot: api, onDemand: api, orgs: api, pricing: pricingProvider, instanceType: instanceTypeProvider}
+func NewProvider(api API, pricingProvider pricing.Provider, instanceTypeProvider instancetype.Provider, cloudspace, org string) *DefaultProvider {
+	return &DefaultProvider{
+		spot:         api,
+		onDemand:     api,
+		pricing:      pricingProvider,
+		instanceType: instanceTypeProvider,
+		cloudspace:   cloudspace,
+		org:          org,
+	}
 }
+
+func (p *DefaultProvider) Cloudspace() string { return p.cloudspace }
 
 func (p *DefaultProvider) Create(ctx context.Context, nodeClass *apiv1.RackspaceSpotNodeClass, nodeClaim *karpv1.NodeClaim, instanceTypes []*karpcloudprovider.InstanceType) (*Pool, error) {
 	if len(instanceTypes) == 0 {
@@ -108,13 +114,9 @@ func (p *DefaultProvider) Create(ctx context.Context, nodeClass *apiv1.Rackspace
 	instanceType := instanceTypes[0]
 	capacityType := deriveCapacityType(nodeClaim)
 
-	org, err := p.organization(ctx)
-	if err != nil {
-		return nil, err
-	}
-
+	org := p.org
 	name := PoolName(nodeClaim)
-	cloudspace := nodeClass.Spec.CloudspaceName
+	cloudspace := p.cloudspace
 	serverClass := instanceType.Name
 	labels := mergeLabels(nodeClass, nodeClaim, instanceType, capacityType)
 	taints := convertTaints(nodeClass.Spec.Taints)
@@ -167,10 +169,7 @@ func (p *DefaultProvider) Get(ctx context.Context, providerID string) (*Pool, er
 	if err != nil {
 		return nil, err
 	}
-	org, err := p.organization(ctx)
-	if err != nil {
-		return nil, err
-	}
+	org := p.org
 	switch kind {
 	case PoolTypeSpot:
 		sp, err := p.spot.GetSpotNodePool(ctx, org, name)
@@ -199,10 +198,7 @@ func (p *DefaultProvider) Delete(ctx context.Context, providerID string) error {
 	if err != nil {
 		return err
 	}
-	org, err := p.organization(ctx)
-	if err != nil {
-		return err
-	}
+	org := p.org
 	switch kind {
 	case PoolTypeSpot:
 		if err := p.spot.DeleteSpotNodePool(ctx, org, name); err != nil {
@@ -224,11 +220,9 @@ func (p *DefaultProvider) Delete(ctx context.Context, providerID string) error {
 	return fmt.Errorf("unknown pool kind %q in provider ID %q", kind, providerID)
 }
 
-func (p *DefaultProvider) List(ctx context.Context, cloudspace string) ([]*Pool, error) {
-	org, err := p.organization(ctx)
-	if err != nil {
-		return nil, err
-	}
+func (p *DefaultProvider) List(ctx context.Context) ([]*Pool, error) {
+	org := p.org
+	cloudspace := p.cloudspace
 	spots, err := p.spot.ListSpotNodePools(ctx, org, cloudspace)
 	if err != nil {
 		return nil, fmt.Errorf("listing spot pools: %w", err)
@@ -252,27 +246,6 @@ func (p *DefaultProvider) List(ctx context.Context, cloudspace string) ([]*Pool,
 		pools = append(pools, onDemandToPool(od, cloudspace))
 	}
 	return pools, nil
-}
-
-func (p *DefaultProvider) OrganizationID(ctx context.Context) (string, error) {
-	return p.organization(ctx)
-}
-
-func (p *DefaultProvider) organization(ctx context.Context) (string, error) {
-	p.orgMu.Lock()
-	defer p.orgMu.Unlock()
-	if p.org != "" {
-		return p.org, nil
-	}
-	orgs, err := p.orgs.ListOrganizations(ctx)
-	if err != nil {
-		return "", fmt.Errorf("listing organizations: %w", err)
-	}
-	if len(orgs) == 0 {
-		return "", errors.New("no organizations available for authenticated user")
-	}
-	p.org = orgs[0].ID
-	return p.org, nil
 }
 
 // PoolName returns the deterministic Rackspace pool name for a NodeClaim.

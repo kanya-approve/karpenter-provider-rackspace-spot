@@ -31,6 +31,7 @@ helm install karpenter \
   oci://ghcr.io/kanya-approve/charts/karpenter-provider-rackspace-spot \
   --version 0.1.0 \
   --namespace karpenter --create-namespace \
+  --set spot.cloudspaceName=my-cloudspace \
   --set spot.refreshToken=$RXTSPOT_REFRESH_TOKEN
 ```
 
@@ -44,8 +45,11 @@ helm install karpenter \
   oci://ghcr.io/kanya-approve/charts/karpenter-provider-rackspace-spot \
   --version 0.1.0 \
   --namespace karpenter \
+  --set spot.cloudspaceName=my-cloudspace \
   --set spot.existingSecret=karpenter-spot
 ```
+
+`spot.cloudspaceName` is required — one Helm install runs one operator for one Cloudspace.
 
 The chart ships the provider's `RackspaceSpotNodeClass` CRD and the upstream `karpenter.sh/v1` `NodePool` + `NodeClaim` CRDs.
 
@@ -65,14 +69,13 @@ Snapshot images (`:main`, `:sha-<commit>`) ship on every push to `main`; snapsho
 
 ## Configuration
 
-A minimal NodeClass + NodePool pair that provisions spot capacity:
+A minimal NodeClass + NodePool pair that provisions spot capacity (the Cloudspace itself is configured at install time on the operator, not per NodeClass):
 
 ```yaml
 apiVersion: karpenter.rackspace.com/v1
 kind: RackspaceSpotNodeClass
 metadata: {name: default}
 spec:
-  cloudspaceName: my-cloudspace   # the target Cloudspace (region is derived)
   bidPercentile: P80              # P20 | P50 | P80 (default P80). See "Bidding".
 ---
 apiVersion: karpenter.sh/v1
