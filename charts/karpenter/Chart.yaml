@@ -2,6 +2,7 @@ apiVersion: v2
 name: karpenter-provider-rackspace-spot
 description: Karpenter cloud provider for Rackspace Spot
 type: application
+icon: https://karpenter.sh/logo.png
 # Chart version is independent of appVersion. Bump for any chart change.
 version: 0.1.0
 # appVersion tracks the controller image tag.
