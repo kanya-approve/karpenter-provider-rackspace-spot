@@ -57,7 +57,7 @@ chart-lint: ## Lint the Helm chart
 
 .PHONY: chart-template
 chart-template: ## Render the Helm chart with a placeholder token
-	helm template karpenter charts/karpenter --set spot.refreshToken=placeholder
+	helm template karpenter charts/karpenter --set spot.refreshToken=placeholder --set spot.cloudspaceName=placeholder
 
 .PHONY: update-pricing
 update-pricing: ## Refresh the embedded percentile snapshot from the S3 feed
