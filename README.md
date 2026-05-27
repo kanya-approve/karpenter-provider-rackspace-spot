@@ -4,6 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/kanya-approve/karpenter-provider-rackspace-spot?sort=semver)](https://github.com/kanya-approve/karpenter-provider-rackspace-spot/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/kanya-approve/karpenter-provider-rackspace-spot/ci.yml?branch=main)](https://github.com/kanya-approve/karpenter-provider-rackspace-spot/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/kanya-approve/karpenter-provider-rackspace-spot)](https://goreportcard.com/report/github.com/kanya-approve/karpenter-provider-rackspace-spot)
+[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/karpenter-provider-rackspace-spot)](https://artifacthub.io/packages/search?repo=karpenter-provider-rackspace-spot)
 
 A [Karpenter](https://karpenter.sh) cloud provider for [Rackspace Spot](https://spot.rackspace.com). Provisions `SpotNodePool` and `OnDemandNodePool` resources in a Cloudspace in response to unschedulable pods, with smart bid pricing driven by Rackspace's published percentile feed.
 
