@@ -18,19 +18,10 @@ What's not in yet:
 
 ## Install
 
-No tagged release has been cut yet, so OCI install pulls a snapshot version. List what's published:
-
-```sh
-gh api /users/kanya-approve/packages/container/charts%2Fkarpenter-provider-rackspace-spot/versions \
-  | jq -r '.[].metadata.container.tags[]'
-```
-
-Then install:
-
 ```sh
 helm install karpenter \
   oci://ghcr.io/kanya-approve/charts/karpenter-provider-rackspace-spot \
-  --version 0.1.0-main.<short-sha> \
+  --version 0.1.0 \
   --namespace karpenter --create-namespace \
   --set spot.refreshToken="$(awk '/refreshToken:/{print $2}' ~/.spot_config)"
 ```
@@ -44,7 +35,7 @@ helm install karpenter charts/karpenter \
   --set spot.refreshToken="$RXTSPOT_REFRESH_TOKEN"
 ```
 
-Snapshot images (`:main`, `:sha-<commit>`) ship on every push to `main`; snapshot charts (`<chart-version>-main.<short-sha>`) ship only when `charts/**` changes. Once `git tag v0.1.0 && git push --tags` lands, the release workflow publishes a plain `0.1.0` image + chart.
+Snapshot images (`:main`, `:sha-<commit>`) ship on every push to `main`; snapshot charts (`<chart-version>-main.<short-sha>`) ship only when `charts/**` changes. Tag releases (`v*.*.*`) publish plain-versioned images and charts.
 
 The chart's `crds/` ships both the provider's `RackspaceSpotNodeClass` CRD and the upstream `karpenter.sh/v1` `NodePool` + `NodeClaim` CRDs.
 
