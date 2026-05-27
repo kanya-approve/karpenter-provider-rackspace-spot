@@ -48,6 +48,7 @@ jobs:
           mkdir -p dist
           helm package "${CHART_PATH}" \
             --version "${{ steps.ver.outputs.version }}" \
+            --app-version "sha-${GITHUB_SHA}" \
             --destination dist
           helm push "dist/${CHART_NAME}-${{ steps.ver.outputs.version }}.tgz" \
             "oci://ghcr.io/${{ github.repository_owner }}/charts"
