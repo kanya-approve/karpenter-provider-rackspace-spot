@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "title": "karpenter-provider-rackspace-spot values",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["spot"],
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": {"type": "string"},
+        "tag": {"type": "string"},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "imagePullSecrets": {"type": "array"},
+    "nameOverride": {"type": "string"},
+    "fullnameOverride": {"type": "string"},
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": {"type": "boolean"},
+        "name": {"type": "string"}
+      }
+    },
+    "spot": {
+      "type": "object",
+      "properties": {
+        "cloudspaceName": {
+          "type": "string",
+          "description": "Target Rackspace Spot Cloudspace name. Required at install (operator panics if unset)."
+        },
+        "refreshToken": {
+          "type": "string",
+          "description": "Rackspace Spot OAuth refresh token. Use this OR existingSecret."
+        },
+        "existingSecret": {
+          "type": "string",
+          "description": "Name of a pre-existing Secret with key refreshToken. Use this OR refreshToken."
+        },
+        "baseURL": {
+          "type": "string",
+          "description": "Override the spot-go-sdk default base URL."
+        },
+        "oauthURL": {
+          "type": "string",
+          "description": "Override the spot-go-sdk default OAuth URL."
+        }
+      }
+    },
+    "extraEnv": {
+      "type": "array",
+      "description": "Additional environment variables passed to the controller (e.g. FEATURE_GATES).",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string"},
+          "value": {"type": "string"}
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {"type": "object"},
+        "requests": {"type": "object"}
+      }
+    },
+    "podAnnotations": {"type": "object"},
+    "podLabels": {"type": "object"},
+    "nodeSelector": {"type": "object"},
+    "tolerations": {"type": "array"},
+    "affinity": {"type": "object"},
+    "operator": {
+      "type": "object",
+      "properties": {
+        "metricsPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "healthProbePort": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "disableLeaderElection": {"type": "boolean"}
+      }
+    }
+  }
+}
