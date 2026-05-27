@@ -122,8 +122,6 @@ make update-pricing # refresh the embedded pricing snapshot from the S3 feed
 
 CI on PRs runs `make build`, `make test`, `make chart-lint`, `make chart-template`. The `Snapshot` workflow pushes `ghcr.io/kanya-approve/karpenter-provider-rackspace-spot:main` + `:sha-<commit>` on every push to `main`; tag releases (`v*.*.*`) publish versioned images and a Helm chart to `oci://ghcr.io/kanya-approve/charts`.
 
-**Don't `kubectl set image` on the helm-managed Deployment** — it'll take SSA field ownership and the next `helm upgrade` will fail with a conflict. Always upgrade via `helm upgrade --set image.tag=sha-<commit>`.
-
 ## Architecture notes
 
 - **1 Rackspace pool per NodeClaim, `desired_server_count=1`.** Rackspace's smallest provisioning unit is a pool with a replica count; Karpenter wants per-machine lifecycle. This mapping gives clean Karpenter semantics at the cost of higher pool count under churn.
