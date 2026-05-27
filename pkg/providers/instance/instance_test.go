@@ -33,9 +33,9 @@ import (
 // market*1.2 fallback path in chooseBidPrice.
 type stubPricing struct{}
 
-func (*stubPricing) SpotPrice(*rxtspot.ServerClass) float64                                    { return 0 }
-func (*stubPricing) OnDemandPrice(*rxtspot.ServerClass) float64                                { return 0 }
-func (*stubPricing) MinBidPrice(*rxtspot.ServerClass) float64                                  { return 0 }
+func (*stubPricing) SpotPrice(*rxtspot.ServerClass) float64     { return 0 }
+func (*stubPricing) OnDemandPrice(*rxtspot.ServerClass) float64 { return 0 }
+func (*stubPricing) MinBidPrice(*rxtspot.ServerClass) float64   { return 0 }
 func (*stubPricing) Percentiles(context.Context, string, string) (pricing.Percentiles, error) {
 	return pricing.Percentiles{}, errors.New("stub: no feed")
 }

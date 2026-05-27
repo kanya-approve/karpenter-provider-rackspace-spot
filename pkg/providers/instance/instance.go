@@ -21,9 +21,9 @@ import (
 
 	rxtspot "github.com/rackspace-spot/spot-go-sdk/api/v1"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	karpcloudprovider "sigs.k8s.io/karpenter/pkg/cloudprovider"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	apiv1 "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/apis/v1"
 	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/instancetype"

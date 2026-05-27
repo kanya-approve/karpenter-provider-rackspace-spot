@@ -13,7 +13,7 @@ package v1
 import "github.com/awslabs/operatorpkg/status"
 
 const (
-	ConditionTypeCloudspaceFound        = "CloudspaceFound"
+	ConditionTypeCloudspaceFound         = "CloudspaceFound"
 	ConditionTypeServerClassesDiscovered = "ServerClassesDiscovered"
 )
 

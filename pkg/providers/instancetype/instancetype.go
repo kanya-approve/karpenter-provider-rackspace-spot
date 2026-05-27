@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	resourceNvidiaGPU = "nvidia.com/gpu"
+	resourceNvidiaGPU  = "nvidia.com/gpu"
 	defaultPodsPerNode = 110
 )
 

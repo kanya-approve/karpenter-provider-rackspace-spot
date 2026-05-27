@@ -187,8 +187,8 @@ type feed struct {
 }
 
 type regionEntry struct {
-	Generation    string                       `json:"generation"`
-	ServerClasses map[string]serverClassEntry  `json:"serverclasses"`
+	Generation    string                      `json:"generation"`
+	ServerClasses map[string]serverClassEntry `json:"serverclasses"`
 }
 
 type serverClassEntry struct {
