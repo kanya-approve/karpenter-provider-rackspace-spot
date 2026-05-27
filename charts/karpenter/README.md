@@ -9,7 +9,7 @@ Each Helm install runs one operator against one Cloudspace. Cloudspaces are sing
 ```sh
 helm install karpenter \
   oci://ghcr.io/kanya-approve/charts/karpenter-provider-rackspace-spot \
-  --version 0.1.2 \
+  --version 0.1.0 \
   --namespace karpenter --create-namespace \
   --set spot.cloudspaceName=my-cloudspace \
   --set spot.refreshToken=$RXTSPOT_REFRESH_TOKEN
@@ -23,7 +23,7 @@ kubectl -n karpenter create secret generic karpenter-spot \
 
 helm install karpenter \
   oci://ghcr.io/kanya-approve/charts/karpenter-provider-rackspace-spot \
-  --version 0.1.2 \
+  --version 0.1.0 \
   --namespace karpenter --create-namespace \
   --set spot.cloudspaceName=my-cloudspace \
   --set spot.existingSecret=karpenter-spot
