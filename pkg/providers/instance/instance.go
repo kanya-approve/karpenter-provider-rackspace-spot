@@ -458,7 +458,7 @@ func mergeLabels(nodeClass *apiv1.RackspaceSpotNodeClass, nc *karpv1.NodeClaim, 
 }
 
 func convertTaints(taints []corev1.Taint) []interface{} {
-	out := make([]interface{}, 0, len(taints))
+	out := make([]interface{}, 0, len(taints)+1)
 	for _, t := range taints {
 		out = append(out, map[string]interface{}{
 			"key":    t.Key,
@@ -466,6 +466,17 @@ func convertTaints(taints []corev1.Taint) []interface{} {
 			"effect": string(t.Effect),
 		})
 	}
+	// Karpenter v1 expects every managed node to register with the
+	// karpenter.sh/unregistered:NoExecute taint so the lifecycle controller
+	// can prove ownership before any pods land. Karpenter removes it once
+	// registration completes. Without it, the controller logs
+	// "missing karpenter.sh/unregistered taint prevents registration related
+	// race conditions" and races could let pods schedule before the node is
+	// considered Karpenter-owned.
+	out = append(out, map[string]interface{}{
+		"key":    karpv1.UnregisteredTaintKey,
+		"effect": string(corev1.TaintEffectNoExecute),
+	})
 	return out
 }
 
