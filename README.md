@@ -10,7 +10,7 @@ Alpha. Driven end-to-end on a real Cloudspace; all core flows validated:
 - **Scale down** (consolidation drains nodes via the eviction API and deletes the underlying pool)
 - **Smart bidding** (`max(market, P{20,50,80}) × 1.05`, clamped to Rackspace's per-ServerClass `minBidPrice` floor, rounded to Rackspace's 3-dp / 2-dp-above-$0.05 precision rules)
 - **External pool delete recovery** (Karpenter's `registrationTimeout` triggers our `Delete`, the SDK returns 404, NodeClaim is cleaned up and replaced)
-- **Repair policies** (Node `Ready=False/Unknown` or `NetworkUnavailable=True` for 30+ min auto-replaces the node)
+- **Repair policies** (Node `Ready=False/Unknown` or `NetworkUnavailable=True` for 30+ min auto-replaces the node — gated behind Karpenter's `NodeRepair` feature gate, see [Enabling node repair](#enabling-node-repair))
 
 What's not in yet:
 
@@ -103,6 +103,18 @@ The Rackspace/OpenStack cloud-controller overwrites `node.kubernetes.io/instance
 - `karpenter.rackspace.com/rackspacespotnodeclass=<name>` — which NodeClass
 
 Don't filter on `node.kubernetes.io/instance-type=<ServerClass>` — the CCM clobbers it.
+
+### Enabling node repair
+
+`RepairPolicies` returns a non-empty list, but Karpenter's `node.health` controller is gated behind the `NodeRepair` feature gate, which is **off by default upstream** (and off here too — a transient kubelet hiccup or control-plane blip can briefly flip many nodes to `Ready=Unknown`, and an over-eager repair controller would race to wipe them). To opt in:
+
+```sh
+helm upgrade karpenter ... \
+  --set 'extraEnv[0].name=FEATURE_GATES' \
+  --set 'extraEnv[0].value=NodeRepair=true\,ReservedCapacity=true\,SpotToSpotConsolidation=false\,NodeOverlay=false\,StaticCapacity=false'
+```
+
+The full set has to be passed because `FEATURE_GATES` is parsed as a complete override, not a partial merge.
 
 ### Authentication
 
