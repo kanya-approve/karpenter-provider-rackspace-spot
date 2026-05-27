@@ -1,26 +1,21 @@
 # karpenter-provider-rackspace-spot
 
-A Karpenter cloud provider for [Rackspace Spot](https://spot.rackspace.com) — provisions `SpotNodePool` and `OnDemandNodePool` resources in a Cloudspace in response to unschedulable pods, with bid-price-aware scheduling.
+A Karpenter cloud provider for [Rackspace Spot](https://spot.rackspace.com) — provisions `SpotNodePool` and `OnDemandNodePool` resources in a Cloudspace in response to unschedulable pods, with smart bid pricing driven by Rackspace's published percentile feed.
 
 ## Status
 
-Pre-alpha. The Karpenter-side flow works end-to-end on a real Cloudspace:
+Alpha. Driven end-to-end on a real Cloudspace; all core flows validated:
 
-- Karpenter scheduler picks a Rackspace ServerClass; `Create()` mints a 1-replica `SpotNodePool` or `OnDemandNodePool` (1-pool-per-NodeClaim mapping); `Delete()` is idempotent
-- `RackspaceSpotNodeClass` CRD with reconciler that validates the referenced Cloudspace, caches its region, and refreshes the eligible ServerClass list
-- Helm chart ships the provider's CRD plus the upstream `karpenter.sh` CRDs
-- Multi-arch container image built with [ko](https://ko.build); snapshot `:main` + `:sha-<commit>` published on every push to `main`, versioned tags on release
+- **Scale up** (spot + on-demand, single + multi-replica, mixed-shape workloads)
+- **Scale down** (consolidation drains nodes via the eviction API and deletes the underlying pool)
+- **Smart bidding** (`max(market, P{20,50,80}) × 1.05`, clamped to Rackspace's per-ServerClass `minBidPrice` floor, rounded to Rackspace's 3-dp / 2-dp-above-$0.05 precision rules)
+- **External pool delete recovery** (Karpenter's `registrationTimeout` triggers our `Delete`, the SDK returns 404, NodeClaim is cleaned up and replaced)
+- **Drift detection** (NodeClass edits to labels/taints/annotations/cloudspace/serverClassSelector roll the affected nodes via a hash-annotation comparison)
+- **Repair policies** (Node `Ready=False/Unknown` or `NetworkUnavailable=True` for 30+ min auto-replaces the node)
 
-**Known gap before nodes can actually carry workloads:** Rackspace's managed cloud-controller sets `node.spec.providerID = openstack:///<vm-uuid>`, but our provider returns `rackspacespot://<cs>/<kind>/<nodeclaim-uid>`. Karpenter can't link the joining Node back to the NodeClaim, so the NodeClaim never reaches `Ready` and Karpenter eventually disrupts it. The Node also lacks well-known labels (`karpenter.sh/nodepool`, `karpenter.sh/capacity-type`, `node.kubernetes.io/instance-type` → set by Rackspace's CCM to its internal VM SKU, not the ServerClass). Both need a post-registration reconciler — tracked separately.
+What's not in yet:
 
-Deferred — tracked as GitHub issues:
-
-- [#1](https://github.com/kanya-approve/karpenter-provider-rackspace-spot/issues/1) Drift detection (`IsDrifted`)
-- [#2](https://github.com/kanya-approve/karpenter-provider-rackspace-spot/issues/2) Preemption webhook receiver (graceful drain on Rackspace's 6-minute notice)
-- [#3](https://github.com/kanya-approve/karpenter-provider-rackspace-spot/issues/3) Repair policies (NotReady/unreachable Node replacement)
-- [#4](https://github.com/kanya-approve/karpenter-provider-rackspace-spot/issues/4) Rate-limit / quota handling for 1-pool-per-NodeClaim churn
-- [#5](https://github.com/kanya-approve/karpenter-provider-rackspace-spot/issues/5) Multi-Cloudspace operation
-- [#8](https://github.com/kanya-approve/karpenter-provider-rackspace-spot/issues/8) Embedded pricing snapshot + scheduled refresh PR
+- **[#2](https://github.com/kanya-approve/karpenter-provider-rackspace-spot/issues/2) Preemption webhook receiver** — Rackspace gives ~6 min notice via a push webhook; we don't run a receiver yet, so spot evictions are ungraceful (pods get hard-killed when the server vanishes).
 
 ## Install
 
@@ -56,7 +51,7 @@ The chart's `crds/` ships both the provider's `RackspaceSpotNodeClass` CRD and t
 
 ## Configure
 
-A minimal NodeClass + NodePool pair that provisions spot capacity in a Cloudspace:
+A minimal NodeClass + NodePool pair that provisions spot capacity:
 
 ```yaml
 apiVersion: karpenter.rackspace.com/v1
@@ -64,7 +59,7 @@ kind: RackspaceSpotNodeClass
 metadata: {name: default}
 spec:
   cloudspaceName: my-cloudspace   # the target Cloudspace (region is derived)
-  bidPrice: "0.005"               # required when capacity-type=spot
+  bidPercentile: P80              # P20 | P50 | P80 (default P80). See "Bidding".
 ---
 apiVersion: karpenter.sh/v1
 kind: NodePool
@@ -87,6 +82,29 @@ spec:
 
 See `config/samples/` for working manifests.
 
+### Bidding
+
+Every spot pool's bid is computed at Create time as `max(current_market, percentile) × 1.05`, clamped up to the ServerClass's `minBidPrice` floor and rounded to Rackspace's precision rules (≤3 decimal places, or multiples of $0.01 above $0.05). There is no user-set `bidPrice` field on the NodeClass — the only knob is which percentile of Rackspace's published 30-day distribution to bid at:
+
+- `P80` (default): bid clears ~80% of typical price ticks. Stable, more expensive on volatile SKUs.
+- `P50`: bid clears ~50%. Cheaper, more eviction-prone.
+- `P20`: cheapest, most eviction-prone.
+
+Cost ceilings should be expressed via `NodePool.limits` or `RackspaceSpotNodeClass.serverClassSelector`, not via a per-pool bid.
+
+Pricing data comes from [Rackspace's public S3 feed](https://ngpc-prod-public-data.s3.us-east-2.amazonaws.com/percentiles.json). The controller fetches it live (5-min cache) and falls back to an embedded snapshot at `pkg/providers/pricing/initial-prices.json` (refreshed weekly via `.github/workflows/update-pricing.yaml`).
+
+### Workload affinity — use `karpenter.sh/*` labels
+
+The Rackspace/OpenStack cloud-controller overwrites `node.kubernetes.io/instance-type` (with the underlying VM SKU, e.g. `compute1-4`) and `topology.kubernetes.io/region` (with the OpenStack region code, e.g. `HKG`) post-registration. Workloads using `nodeSelector` or affinity should target:
+
+- `karpenter.sh/nodepool=<name>` — which NodePool spawned the node
+- `karpenter.sh/capacity-type=spot|on-demand` — what kind of capacity
+- `karpenter.rackspace.com/managed=true` — Karpenter-provisioned (vs. seed/manual pools)
+- `karpenter.rackspace.com/rackspacespotnodeclass=<name>` — which NodeClass
+
+Don't filter on `node.kubernetes.io/instance-type=<ServerClass>` — the CCM clobbers it.
+
 ### Authentication
 
 The controller reads `SPOT_REFRESH_TOKEN` (and other `SPOT_*` env vars per [spot-go-sdk Config](https://github.com/rackspace-spot/spot-go-sdk/blob/main/api/v1/client.go)). The chart wires this from `spot.refreshToken` or `spot.existingSecret`.
@@ -99,16 +117,20 @@ make build        # build the controller binary
 make test         # unit tests (mocks via spot-go-sdk/api/v1/mocks)
 make image        # ko build + push (set KO_DOCKER_REPO and TAG)
 make chart-lint   # helm lint
+make update-pricing # refresh the embedded pricing snapshot from the S3 feed
 ```
 
 CI on PRs runs `make build`, `make test`, `make chart-lint`, `make chart-template`. The `Snapshot` workflow pushes `ghcr.io/kanya-approve/karpenter-provider-rackspace-spot:main` + `:sha-<commit>` on every push to `main`; tag releases (`v*.*.*`) publish versioned images and a Helm chart to `oci://ghcr.io/kanya-approve/charts`.
 
+**Don't `kubectl set image` on the helm-managed Deployment** — it'll take SSA field ownership and the next `helm upgrade` will fail with a conflict. Always upgrade via `helm upgrade --set image.tag=sha-<commit>`.
+
 ## Architecture notes
 
-- **1 Rackspace pool per NodeClaim, `desired_server_count=1`.** Rackspace's smallest provisioning unit is a pool with a replica count; Karpenter wants per-machine lifecycle. This mapping gives clean Karpenter semantics at the cost of higher pool count under churn (see issue [#4](https://github.com/kanya-approve/karpenter-provider-rackspace-spot/issues/4)).
-- **Cloudspace is single-region.** Each `RackspaceSpotNodeClass` references one Cloudspace; the region is whatever the Cloudspace is in (cached in `status.region`, never user-set).
+- **1 Rackspace pool per NodeClaim, `desired_server_count=1`.** Rackspace's smallest provisioning unit is a pool with a replica count; Karpenter wants per-machine lifecycle. This mapping gives clean Karpenter semantics at the cost of higher pool count under churn.
+- **Cloudspace is single-region.** Each `RackspaceSpotNodeClass` references one Cloudspace; the region is whatever the Cloudspace is in (cached in `status.region`, never user-set). Multi-Cloudspace deployments run one Karpenter install per Cloudspace.
 - **Pool name = NodeClaim UID.** Rackspace's admission webhook requires lowercase-UUID names. Karpenter-managed pools are distinguished by the `karpenter.rackspace.com/managed=true` label rather than a name prefix.
-- **`karpenter.sh/v1` core CRDs ship with the chart.** The binary embeds `sigs.k8s.io/karpenter` and runs its core controllers (provisioning, disruption, nodeclaim, nodepool) alongside our `RackspaceSpotNodeClass` reconciler.
+- **`karpenter.sh/v1` core CRDs ship with the chart.** The binary embeds `sigs.k8s.io/karpenter` and runs its core controllers (provisioning, disruption, nodeclaim, nodepool) alongside our `RackspaceSpotNodeClass` reconciler and the `nodelink` reconciler.
+- **`nodelink` reconciler bridges the providerID gap.** Rackspace's CCM sets `Node.spec.providerID = openstack:///<vm-uuid>`; our `Create()` returns `rackspacespot://<cs>/<kind>/<nodeclaim-uid>` because we don't know the VM UUID at create time (Rackspace's auction decouples bid acceptance from server assignment). When a Node joins carrying our `karpenter.rackspace.com/managed=true` label, `nodelink` patches the NodeClaim's `Status.ProviderID` to match the CCM-set value so Karpenter's lifecycle controller can complete the binding.
 
 ## License
 
