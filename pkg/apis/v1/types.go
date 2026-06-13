@@ -47,13 +47,6 @@ type RackspaceSpotNodeClassList struct {
 // RackspaceSpotNodeClassSpec is the user-facing configuration for a
 // RackspaceSpotNodeClass.
 type RackspaceSpotNodeClassSpec struct {
-	// ServerClassSelector narrows which ServerClasses are considered when
-	// scheduling. If unset, all ServerClasses in the Cloudspace's region are
-	// eligible.
-	//
-	// +optional
-	ServerClassSelector *metav1.LabelSelector `json:"serverClassSelector,omitempty"`
-
 	// BidPercentile picks which percentile of Rackspace's published 30-day
 	// price distribution the controller bids at for spot pools. Lower
 	// percentiles mean cheaper bids and more frequent preemptions during
