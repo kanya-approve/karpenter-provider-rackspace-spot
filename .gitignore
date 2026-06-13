@@ -26,3 +26,7 @@ kubeconfig
 # Go workspace files
 go.work
 go.work.sum
+.graphify/
+graphify-out
+.graphify_*.json
+.graphify_python
