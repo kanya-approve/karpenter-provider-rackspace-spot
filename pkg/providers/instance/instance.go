@@ -63,7 +63,7 @@ type Pool struct {
 }
 
 type Provider interface {
-	Create(ctx context.Context, nodeClass *apiv1.RackspaceSpotNodeClass, nodeClaim *karpv1.NodeClaim, instanceTypes []*karpcloudprovider.InstanceType) (*Pool, error)
+	Create(ctx context.Context, nodeClass *apiv1.RackspaceSpotNodeClass, nodeClaim *karpv1.NodeClaim, instanceTypes []*karpcloudprovider.InstanceType, capacityType string) (*Pool, error)
 	Get(ctx context.Context, providerID string) (*Pool, error)
 	Delete(ctx context.Context, providerID string) error
 	List(ctx context.Context) ([]*Pool, error)
@@ -105,12 +105,11 @@ func NewProvider(api API, pricingProvider pricing.Provider, instanceTypeProvider
 
 func (p *DefaultProvider) Cloudspace() string { return p.cloudspace }
 
-func (p *DefaultProvider) Create(ctx context.Context, nodeClass *apiv1.RackspaceSpotNodeClass, nodeClaim *karpv1.NodeClaim, instanceTypes []*karpcloudprovider.InstanceType) (*Pool, error) {
+func (p *DefaultProvider) Create(ctx context.Context, nodeClass *apiv1.RackspaceSpotNodeClass, nodeClaim *karpv1.NodeClaim, instanceTypes []*karpcloudprovider.InstanceType, capacityType string) (*Pool, error) {
 	if len(instanceTypes) == 0 {
 		return nil, errors.New("no instance types provided")
 	}
 	instanceType := instanceTypes[0]
-	capacityType := deriveCapacityType(nodeClaim)
 
 	org := p.org
 	name := PoolName(nodeClaim)
@@ -325,19 +324,6 @@ func roundBidUp(bid float64) float64 {
 		return math.Ceil(bid*100-eps) / 100 // multiples of 0.01
 	}
 	return math.Ceil(bid*200-eps) / 200 // multiples of 0.005
-}
-
-// deriveCapacityType picks one capacity type from the NodeClaim's
-// karpenter.sh/capacity-type requirement. Defaults to on-demand when unset.
-// If multiple values are allowed (e.g. ["spot","on-demand"]), the first wins —
-// the scheduler ordered them by preference.
-func deriveCapacityType(nc *karpv1.NodeClaim) string {
-	for _, r := range nc.Spec.Requirements {
-		if r.Key == karpv1.CapacityTypeLabelKey && len(r.Values) > 0 {
-			return r.Values[0]
-		}
-	}
-	return karpv1.CapacityTypeOnDemand
 }
 
 // MakeProviderID builds a Karpenter providerID for a Rackspace pool.

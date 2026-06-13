@@ -20,10 +20,15 @@ import (
 	karpcloudprovider "sigs.k8s.io/karpenter/pkg/cloudprovider"
 	"sigs.k8s.io/karpenter/pkg/scheduling"
 
+	apiv1 "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/apis/v1"
+	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/instance"
 	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/instancetype"
 )
 
-const testRegion = "us-central-dfw-1"
+const (
+	testRegion     = "us-central-dfw-1"
+	testCloudspace = "my-cs"
+)
 
 // stubInstanceTypeProvider returns a fixed instance-type list for
 // pickInstanceType tests; Get/MinBidPrice are unused on that path.
@@ -172,5 +177,79 @@ func TestPickInstanceType_NoneCompatible(t *testing.T) {
 	}
 	if _, _, err := c.pickInstanceType(context.Background(), newClaim(karpv1.CapacityTypeSpot, "nonexistent"), testRegion); err == nil {
 		t.Error("expected error when no instance type matches, got nil")
+	}
+}
+
+// When a NodeClaim allows both capacity types, spot is preferred even if an
+// on-demand offering is cheaper overall.
+func TestPickInstanceType_PrefersSpotWhenAllowed(t *testing.T) {
+	c := &CloudProvider{
+		instanceType: &stubInstanceTypeProvider{list: []*karpcloudprovider.InstanceType{
+			makeInstanceType("gp.small", 0.03, 0.01), // cheapest overall is its on-demand
+			makeInstanceType("gp.large", 0.02, 0.04), // cheapest spot
+		}},
+		region: testRegion,
+	}
+	nc := newClaim("", "gp.small", "gp.large")
+	nc.Spec.Requirements = append(nc.Spec.Requirements, karpv1.NodeSelectorRequirementWithMinValues{
+		Key:      karpv1.CapacityTypeLabelKey,
+		Operator: corev1.NodeSelectorOpIn,
+		Values:   []string{karpv1.CapacityTypeOnDemand, karpv1.CapacityTypeSpot},
+	})
+	it, ct, err := c.pickInstanceType(context.Background(), nc, testRegion)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if ct != karpv1.CapacityTypeSpot {
+		t.Errorf("capacity type = %q, want spot (preferred when allowed)", ct)
+	}
+	if it.Name != "gp.large" {
+		t.Errorf("picked %q, want gp.large (cheapest spot, not the cheaper on-demand)", it.Name)
+	}
+}
+
+// fakeInstanceProvider records the providerID passed to Delete so the test can
+// assert which pool kind was targeted.
+type fakeInstanceProvider struct {
+	deleted string
+}
+
+var _ instance.Provider = (*fakeInstanceProvider)(nil)
+
+func (f *fakeInstanceProvider) Create(context.Context, *apiv1.RackspaceSpotNodeClass, *karpv1.NodeClaim, []*karpcloudprovider.InstanceType, string) (*instance.Pool, error) {
+	return &instance.Pool{}, nil
+}
+func (f *fakeInstanceProvider) Get(context.Context, string) (*instance.Pool, error) {
+	return nil, instance.ErrPoolNotFound
+}
+func (f *fakeInstanceProvider) Delete(_ context.Context, providerID string) error {
+	f.deleted = providerID
+	return nil
+}
+func (f *fakeInstanceProvider) List(context.Context) ([]*instance.Pool, error) { return nil, nil }
+func (f *fakeInstanceProvider) Cloudspace() string                             { return testCloudspace }
+
+// Delete must target the pool kind Create actually built — read from the
+// capacity-type label — not the requirement's first value, which can disagree
+// when both capacity types are allowed. Deleting the wrong kind leaks the pool.
+func TestDelete_UsesCapacityTypeLabel(t *testing.T) {
+	f := &fakeInstanceProvider{}
+	c := &CloudProvider{instances: f, cloudspace: testCloudspace}
+
+	nc := &karpv1.NodeClaim{}
+	nc.UID = "uid-9"
+	nc.Spec.Requirements = []karpv1.NodeSelectorRequirementWithMinValues{{
+		Key:      karpv1.CapacityTypeLabelKey,
+		Operator: corev1.NodeSelectorOpIn,
+		Values:   []string{karpv1.CapacityTypeOnDemand, karpv1.CapacityTypeSpot}, // on-demand first
+	}}
+	nc.Labels = map[string]string{karpv1.CapacityTypeLabelKey: karpv1.CapacityTypeSpot} // Create chose spot
+
+	if err := c.Delete(context.Background(), nc); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	want := instance.MakeProviderID(testCloudspace, instance.PoolTypeSpot, "uid-9")
+	if f.deleted != want {
+		t.Errorf("deleted %q, want %q (kind from capacity-type label, not requirement)", f.deleted, want)
 	}
 }
