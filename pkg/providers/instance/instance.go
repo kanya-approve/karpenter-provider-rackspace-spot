@@ -313,16 +313,18 @@ func selectPercentile(choice string, p pricing.Percentiles) float64 {
 }
 
 // roundBidUp honors Rackspace's admission validation:
-//   - "bidPrice can only be a positive number up to three decimal places"
+//   - "BidPrice must be a multiple of 0.005 between 0.001 and 0.05"
 //   - "BidPrice must be a multiple of 0.01 when greater than 0.05"
 //
-// Rounding is always UP so we never accidentally fall below the market
-// price we just computed against.
+// Rounding is always UP so we never fall below the market price we just
+// computed against; the epsilon keeps float noise from bumping an
+// already-valid bid a full step higher.
 func roundBidUp(bid float64) float64 {
+	const eps = 1e-9
 	if bid > 0.05 {
-		return math.Ceil(bid*100) / 100 // 2 dp (multiples of 0.01)
+		return math.Ceil(bid*100-eps) / 100 // multiples of 0.01
 	}
-	return math.Ceil(bid*1000) / 1000 // 3 dp
+	return math.Ceil(bid*200-eps) / 200 // multiples of 0.005
 }
 
 // deriveCapacityType picks one capacity type from the NodeClaim's

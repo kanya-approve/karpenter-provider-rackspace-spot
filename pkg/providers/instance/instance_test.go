@@ -13,6 +13,7 @@ package instance
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 
 	rxtspot "github.com/rackspace-spot/spot-go-sdk/api/v1"
@@ -193,10 +194,9 @@ func TestCreateSpot_HappyPath(t *testing.T) {
 	if pool.ProviderID != MakeProviderID(testCloudspace, PoolTypeSpot, PoolName(nc)) {
 		t.Errorf("unexpected providerID %q", pool.ProviderID)
 	}
-	// Market 0.001 * 1.2 = 0.0012, ceil to 3 decimals = 0.002.
-	// Rackspace's CRD validation only accepts up to 3 dp.
-	if captured.BidPrice != "0.002" {
-		t.Errorf("BidPrice = %q, want 0.002", captured.BidPrice)
+	// Market 0.001 * 1.2 = 0.0012, ceil to next multiple of 0.005 = 0.005.
+	if captured.BidPrice != "0.005" {
+		t.Errorf("BidPrice = %q, want 0.005", captured.BidPrice)
 	}
 	if captured.Desired != 1 {
 		t.Errorf("Desired = %d, want 1", captured.Desired)
@@ -218,8 +218,29 @@ func TestChooseBidPrice_MarketPlusHeadroomFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if got != "0.002" {
-		t.Errorf("chooseBidPrice (fallback) = %q, want 0.002 (market 0.001 * 1.2 ceil 3dp)", got)
+	if got != "0.005" {
+		t.Errorf("chooseBidPrice (fallback) = %q, want 0.005 (market 0.001 * 1.2, ceil to multiple of 0.005)", got)
+	}
+}
+
+func TestRoundBidUp(t *testing.T) {
+	cases := []struct {
+		in   float64
+		want string
+	}{
+		{0.001 * 1.2, "0.005"},
+		{0.031 * 1.05, "0.035"},
+		{0.036 * 1.05, "0.04"},
+		{0.041 * 1.05, "0.045"},
+		{0.035, "0.035"}, // float noise must not bump an already-valid bid
+		{0.05, "0.05"},
+		{0.061 * 1.05, "0.07"},
+		{0.07, "0.07"},
+	}
+	for _, c := range cases {
+		if got := strconv.FormatFloat(roundBidUp(c.in), 'f', -1, 64); got != c.want {
+			t.Errorf("roundBidUp(%v) = %s, want %s", c.in, got, c.want)
+		}
 	}
 }
 
