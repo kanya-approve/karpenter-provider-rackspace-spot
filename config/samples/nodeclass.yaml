@@ -5,7 +5,3 @@ metadata:
 spec:
   labels:
     team: platform
-  # Optional: narrow the eligible ServerClasses by category, region, etc.
-  # serverClassSelector:
-  #   matchLabels:
-  #     category: gp
