@@ -154,12 +154,6 @@ func TestPoolNameIsDeterministic(t *testing.T) {
 	}
 }
 
-func TestDeriveCapacityType_DefaultsToOnDemand(t *testing.T) {
-	if got := deriveCapacityType(newClaim("x", "")); got != karpv1.CapacityTypeOnDemand {
-		t.Errorf("default capacity type = %q, want on-demand", got)
-	}
-}
-
 func TestCreateSpot_HappyPath(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	api := newAPI(ctrl)
@@ -184,7 +178,7 @@ func TestCreateSpot_HappyPath(t *testing.T) {
 	nc := newClaim("uid-1", karpv1.CapacityTypeSpot)
 	nodeClass := newNodeClass(map[string]string{"team": "platform"})
 
-	pool, err := p.Create(context.Background(), nodeClass, nc, newInstanceTypes())
+	pool, err := p.Create(context.Background(), nodeClass, nc, newInstanceTypes(), karpv1.CapacityTypeSpot)
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
@@ -273,6 +267,7 @@ func TestCreateOnDemand_HappyPath(t *testing.T) {
 		newNodeClass(nil),
 		newClaim("uid-3", karpv1.CapacityTypeOnDemand),
 		newInstanceTypes(),
+		karpv1.CapacityTypeOnDemand,
 	)
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
@@ -298,6 +293,7 @@ func TestCreate_IdempotentOnAlreadyExists(t *testing.T) {
 		newNodeClass(nil),
 		newClaim("uid-4", karpv1.CapacityTypeSpot),
 		newInstanceTypes(),
+		karpv1.CapacityTypeSpot,
 	)
 	if err != nil {
 		t.Fatalf("expected idempotent success on AlreadyExists, got %v", err)

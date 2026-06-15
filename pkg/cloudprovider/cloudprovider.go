@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	karpcloudprovider "sigs.k8s.io/karpenter/pkg/cloudprovider"
+	"sigs.k8s.io/karpenter/pkg/scheduling"
 
 	apiv1 "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/apis/v1"
 	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/operator"
@@ -97,7 +98,7 @@ func (c *CloudProvider) Create(ctx context.Context, nc *karpv1.NodeClaim) (*karp
 		return nil, err
 	}
 
-	pool, err := c.instances.Create(ctx, nodeClass, nc, []*karpcloudprovider.InstanceType{instType})
+	pool, err := c.instances.Create(ctx, nodeClass, nc, []*karpcloudprovider.InstanceType{instType}, capacityType)
 	if err != nil {
 		return nil, fmt.Errorf("creating pool: %w", err)
 	}
@@ -113,7 +114,14 @@ func (c *CloudProvider) Delete(ctx context.Context, nc *karpv1.NodeClaim) error 
 	// because nodelink may have rewritten it to the Rackspace CCM's
 	// openstack:///<vm-uuid> form, which doesn't carry pool kind/name.
 	poolName := string(nc.UID)
-	capacityType := requirementValue(nc, karpv1.CapacityTypeLabelKey)
+	// Prefer the capacity-type label Create stamped on the NodeClaim (the pool's
+	// actual kind) over the requirement, which may list both spot and on-demand
+	// and disagree with the spot-preferred choice — deleting the wrong kind would
+	// leak the real pool.
+	capacityType := nc.Labels[karpv1.CapacityTypeLabelKey]
+	if capacityType == "" {
+		capacityType = requirementValue(nc, karpv1.CapacityTypeLabelKey)
+	}
 	kind := instance.PoolTypeSpot
 	if capacityType == karpv1.CapacityTypeOnDemand {
 		kind = instance.PoolTypeOnDemand
@@ -224,20 +232,67 @@ func (c *CloudProvider) resolveNodeClass(ctx context.Context, nc *karpv1.NodeCla
 	return &nodeClass, nil
 }
 
+// pickInstanceType selects the capacity type and the cheapest available
+// ServerClass compatible with the NodeClaim's requirements. Capacity type
+// prefers spot whenever the NodeClaim permits it and a compatible, available
+// spot offering exists — matching the AWS and GCP providers, which bias mixed
+// capacity-type NodeClaims toward spot. Karpenter passes the full set of
+// resource-feasible instance types in the node.kubernetes.io/instance-type
+// requirement; launching the cheapest rather than an arbitrary one is the cost
+// optimization Karpenter expects a cloud provider to perform.
 func (c *CloudProvider) pickInstanceType(ctx context.Context, nc *karpv1.NodeClaim, region string) (*karpcloudprovider.InstanceType, string, error) {
-	instanceTypeName := requirementValue(nc, corev1.LabelInstanceTypeStable)
-	if instanceTypeName == "" {
-		return nil, "", errors.New("NodeClaim requirements do not pin an instance type")
-	}
-	capacityType := requirementValue(nc, karpv1.CapacityTypeLabelKey)
-	if capacityType == "" {
-		capacityType = karpv1.CapacityTypeOnDemand
-	}
-	it, err := c.instanceType.Get(ctx, region, instanceTypeName)
+	instanceTypes, err := c.instanceType.List(ctx, region)
 	if err != nil {
-		return nil, "", fmt.Errorf("looking up instance type %q in region %s: %w", instanceTypeName, region, err)
+		return nil, "", fmt.Errorf("listing instance types in region %s: %w", region, err)
 	}
-	return it, capacityType, nil
+
+	capacityType := karpv1.CapacityTypeOnDemand
+	if preferSpot(nc, instanceTypes) {
+		capacityType = karpv1.CapacityTypeSpot
+	}
+
+	// Constrain the requirements to the chosen capacity type so the price we
+	// compare is the price we will pay; the same type is passed to
+	// instance.Create so the pool and the NodeClaim's capacity-type label agree.
+	reqs := scheduling.NewNodeSelectorRequirementsWithMinValues(nc.Spec.Requirements...)
+	reqs.Add(scheduling.NewRequirement(karpv1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, capacityType))
+
+	var best *karpcloudprovider.InstanceType
+	var bestPrice float64
+	for _, it := range instanceTypes {
+		// The instance type's own labels (name, arch, os, zone) must satisfy the
+		// NodeClaim; Intersects mirrors core's instance-type filter.
+		if it.Requirements.Intersects(reqs) != nil {
+			continue
+		}
+		offering := it.Offerings.Available().Compatible(reqs).Cheapest()
+		if offering == nil {
+			continue
+		}
+		if best == nil || offering.Price < bestPrice {
+			best, bestPrice = it, offering.Price
+		}
+	}
+	if best == nil {
+		return nil, "", fmt.Errorf("no available instance type compatible with NodeClaim requirements (capacity type %q)", capacityType)
+	}
+	return best, capacityType, nil
+}
+
+// preferSpot reports whether the NodeClaim permits spot and at least one
+// compatible, available spot offering exists among the instance types.
+func preferSpot(nc *karpv1.NodeClaim, instanceTypes []*karpcloudprovider.InstanceType) bool {
+	reqs := scheduling.NewNodeSelectorRequirementsWithMinValues(nc.Spec.Requirements...)
+	if !reqs.Get(karpv1.CapacityTypeLabelKey).Has(karpv1.CapacityTypeSpot) {
+		return false
+	}
+	reqs.Add(scheduling.NewRequirement(karpv1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, karpv1.CapacityTypeSpot))
+	for _, it := range instanceTypes {
+		if it.Requirements.Intersects(reqs) == nil && it.Offerings.Available().Compatible(reqs).Cheapest() != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *CloudProvider) hydrateClaim(orig *karpv1.NodeClaim, pool *instance.Pool, it *karpcloudprovider.InstanceType, capacityType, region string) *karpv1.NodeClaim {
