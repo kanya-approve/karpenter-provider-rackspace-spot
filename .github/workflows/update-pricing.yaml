@@ -13,7 +13,9 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+        with:
+          persistent-credentials: false
 
       - name: Refresh pkg/providers/pricing/initial-prices.json
         run: |
