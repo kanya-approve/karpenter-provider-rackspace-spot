@@ -44,7 +44,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: sigstore/cosign-installer@v4.1.0
+      - uses: sigstore/cosign-installer@v4
 
       - name: Package + push
         run: |
