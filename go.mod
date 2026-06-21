@@ -7,9 +7,9 @@ require (
 	github.com/rackspace-spot/spot-go-sdk v0.2.0
 	github.com/samber/lo v1.53.0
 	go.uber.org/mock v0.6.0
-	k8s.io/api v0.36.1
-	k8s.io/apimachinery v0.36.1
-	k8s.io/client-go v0.36.1
+	k8s.io/api v0.36.2
+	k8s.io/apimachinery v0.36.2
+	k8s.io/client-go v0.36.2
 	sigs.k8s.io/controller-runtime v0.24.1
 	sigs.k8s.io/karpenter v1.13.0
 )
