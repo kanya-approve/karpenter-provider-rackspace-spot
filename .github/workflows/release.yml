@@ -18,7 +18,9 @@ jobs:
     name: build & publish
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+        with:
+          persistent-credentials: false
 
       - name: Derive versions
         id: versions
@@ -60,7 +62,7 @@ jobs:
 
       - uses: ko-build/setup-ko@v0.9
 
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@v4
 
       - name: Build & push image
         run: |
