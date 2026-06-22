@@ -53,9 +53,9 @@ helm install karpenter \
 
 The chart ships the provider's `RackspaceSpotNodeClass` CRD and the upstream `karpenter.sh/v1` `NodePool` + `NodeClaim` CRDs.
 
-For development against the source tree, swap `oci://...` for `charts/karpenter` and `--set image.tag=main`.
+For development against the source tree, swap `oci://...` for `charts/karpenter` and `--set image.tag=latest`.
 
-Snapshot images (`:main`, `:sha-<commit>`) ship on every push to `main`; snapshot charts (`<chart-version>-main.<short-sha>`) ship when `charts/**` changes. Tag releases (`v*.*.*`) publish plain-versioned images and charts.
+Snapshot images (`:latest`, `:sha-<commit>`) ship on every push to `latest`; snapshot charts (`<chart-version>-latest.<short-sha>`) ship when `charts/**` changes. Tag releases (`v*.*.*`) publish plain-versioned images and charts.
 
 ## Documentation
 
