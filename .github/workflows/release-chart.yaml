@@ -35,8 +35,9 @@ jobs:
         id: ver
         run: |
           BASE=$(awk '/^version:/{print $2; exit}' "${CHART_PATH}/Chart.yaml")
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${BASE%%-*}"
           SHORT_SHA="${GITHUB_SHA::7}"
-          VERSION="${BASE}-latest.${SHORT_SHA}"
+          VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))-snapshot.${SHORT_SHA}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Snapshot chart version: ${VERSION}"
 
