@@ -24,8 +24,8 @@ func (n *RackspaceSpotNodeClass) SetConditions(conditions []status.Condition) {
 	n.Status.Conditions = conditions
 }
 
-func (n *RackspaceSpotNodeClass) StatusConditions() status.ConditionSet {
+func (n *RackspaceSpotNodeClass) StatusConditions(opts ...status.ForOption) status.ConditionSet {
 	return status.NewReadyConditions(
 		ConditionTypeServerClassesDiscovered,
-	).For(n)
+	).For(n, opts...)
 }
