@@ -29,6 +29,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods/eviction"]
     verbs: ["create"]
+  # Volume zone-topology scheduling reads PVCs/PVs (sigs.k8s.io/karpenter
+  # provisioning/scheduling/volumetopology.go + scheduling/volumeusage.go).
+  # Informer-backed, so list+watch are required, not just get.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims", "persistentvolumes"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
