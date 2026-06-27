@@ -32,14 +32,14 @@ helm install karpenter \
   --version 0.1.1 \
   --namespace karpenter --create-namespace \
   --set spot.cloudspaceName=my-cloudspace \
-  --set spot.refreshToken=$RXTSPOT_REFRESH_TOKEN
+  --set spot.refreshToken=$SPOT_REFRESH_TOKEN
 ```
 
 ```sh
 # pre-existing secret
 kubectl create namespace karpenter
 kubectl -n karpenter create secret generic karpenter-spot \
-  --from-literal=refreshToken=$RXTSPOT_REFRESH_TOKEN
+  --from-literal=refreshToken=$SPOT_REFRESH_TOKEN
 
 helm install karpenter \
   oci://ghcr.io/kanya-approve/charts/karpenter-provider-rackspace-spot \
