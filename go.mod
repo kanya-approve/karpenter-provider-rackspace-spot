@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/awslabs/operatorpkg v0.0.0-20260501204335-c49b4ca8d58d
-	github.com/rackspace-spot/spot-go-sdk v0.2.0
+	github.com/rackspace-spot/spot-go-sdk v0.2.1
 	github.com/samber/lo v1.53.0
 	go.uber.org/mock v0.6.0
 	k8s.io/api v0.36.2
