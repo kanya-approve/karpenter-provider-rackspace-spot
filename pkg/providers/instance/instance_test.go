@@ -188,9 +188,9 @@ func TestCreateSpot_HappyPath(t *testing.T) {
 	if pool.ProviderID != MakeProviderID(testCloudspace, PoolTypeSpot, PoolName(nc)) {
 		t.Errorf("unexpected providerID %q", pool.ProviderID)
 	}
-	// Market 0.001 * 1.2 = 0.0012, ceil to next multiple of 0.005 = 0.005.
-	if captured.BidPrice != "0.005" {
-		t.Errorf("BidPrice = %q, want 0.005", captured.BidPrice)
+	// Market 0.001 * 1.2 = 0.0012, snaps up to the 0.01 ladder minimum.
+	if captured.BidPrice != "0.01" {
+		t.Errorf("BidPrice = %q, want 0.01", captured.BidPrice)
 	}
 	if captured.Desired != 1 {
 		t.Errorf("Desired = %d, want 1", captured.Desired)
@@ -212,8 +212,8 @@ func TestChooseBidPrice_MarketPlusHeadroomFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if got != "0.005" {
-		t.Errorf("chooseBidPrice (fallback) = %q, want 0.005 (market 0.001 * 1.2, ceil to multiple of 0.005)", got)
+	if got != "0.01" {
+		t.Errorf("chooseBidPrice (fallback) = %q, want 0.01 (market 0.001 * 1.2 snaps up to the 0.01 ladder minimum)", got)
 	}
 }
 
@@ -222,14 +222,19 @@ func TestRoundBidUp(t *testing.T) {
 		in   float64
 		want string
 	}{
-		{0.001 * 1.2, "0.005"},
-		{0.031 * 1.05, "0.035"},
-		{0.036 * 1.05, "0.04"},
-		{0.041 * 1.05, "0.045"},
-		{0.035, "0.035"}, // float noise must not bump an already-valid bid
-		{0.05, "0.05"},
-		{0.061 * 1.05, "0.07"},
-		{0.07, "0.07"},
+		{0.001 * 1.2, "0.01"},  // below the 0.01 minimum snaps up to it
+		{0.005, "0.01"},        // the old rung 0.005 is no longer valid
+		{0.01, "0.01"},         // float noise must not bump an already-valid bid
+		{0.011, "0.02"},        // 0.01 rungs below 0.04
+		{0.04, "0.04"},
+		{0.041, "0.06"},        // 0.02 rungs below 0.10
+		{0.06, "0.06"},
+		{0.10, "0.1"},
+		{0.101, "0.13"},        // 0.03 rungs below 0.20
+		{0.19, "0.19"},
+		{0.191, "0.22"},        // 0.05 rungs at/above 0.20
+		{0.22, "0.22"},
+		{0.221, "0.27"},
 	}
 	for _, c := range cases {
 		if got := strconv.FormatFloat(roundBidUp(c.in), 'f', -1, 64); got != c.want {

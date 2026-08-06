@@ -311,19 +311,43 @@ func selectPercentile(choice string, p pricing.Percentiles) float64 {
 	}
 }
 
-// roundBidUp honors Rackspace's admission validation:
-//   - "BidPrice must be a multiple of 0.005 between 0.001 and 0.05"
-//   - "BidPrice must be a multiple of 0.01 when greater than 0.05"
+// roundBidUp snaps a bid up onto Rackspace's bid ladder (July 2026 pricing).
+// The minimum bid is 0.01 and every valid bid is a whole number of cents; the
+// step between adjacent rungs widens as the bid climbs:
+//
+//	0.01 below 0.04, 0.02 below 0.10, 0.03 below 0.20, 0.05 at/above 0.20
+//
+// yielding 0.01, 0.02, 0.03, 0.04, 0.06, 0.08, 0.10, 0.13, 0.16, 0.19, 0.22,
+// 0.27, … The admission webhook rejects any off-ladder bid with "bid price X
+// is not on the bid ladder".
 //
 // Rounding is always UP so we never fall below the market price we just
 // computed against; the epsilon keeps float noise from bumping an
-// already-valid bid a full step higher.
+// already-valid bid a full rung higher. Work is done in integer cents to
+// avoid float drift accumulating across rungs.
 func roundBidUp(bid float64) float64 {
 	const eps = 1e-9
-	if bid > 0.05 {
-		return math.Ceil(bid*100-eps) / 100 // multiples of 0.01
+	target := int(math.Ceil(bid*100 - eps))
+	cents := 1 // ladder starts at the 0.01 minimum
+	for cents < target {
+		cents += bidStepCents(cents)
 	}
-	return math.Ceil(bid*200-eps) / 200 // multiples of 0.005
+	return float64(cents) / 100
+}
+
+// bidStepCents returns the ladder step (in cents) that follows a rung at the
+// given cent value, per Rackspace's July 2026 bid ladder.
+func bidStepCents(cents int) int {
+	switch {
+	case cents < 4:
+		return 1
+	case cents < 10:
+		return 2
+	case cents < 20:
+		return 3
+	default:
+		return 5
+	}
 }
 
 // MakeProviderID builds a Karpenter providerID for a Rackspace pool.
