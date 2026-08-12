@@ -4,9 +4,9 @@ description: Karpenter cloud provider for Rackspace Spot
 type: application
 icon: https://karpenter.sh/logo.png
 # Chart version is independent of appVersion. Bump for any chart change.
-version: 0.1.3
+version: 0.1.4
 # appVersion tracks the controller image tag.
-appVersion: "0.1.3"
+appVersion: "0.1.4"
 kubeVersion: ">=1.29.0-0"
 home: https://github.com/kanya-approve/karpenter-provider-rackspace-spot
 sources:
@@ -33,4 +33,4 @@ annotations:
       url: https://spot.rackspace.com
   artifacthub.io/changes: |
     - kind: fixed
-      description: "Snap spot bids onto Rackspace's July 2026 bid ladder (0.01 minimum, variable steps) so pool creation is no longer rejected by the admission webhook"
+      description: "Advertise per-ServerClass ephemeral-storage (from the raw serverclasses disk field) so pods requesting ephemeral-storage can be scheduled"

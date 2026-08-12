@@ -12,7 +12,10 @@ package instancetype
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +33,9 @@ import (
 const (
 	resourceNvidiaGPU  = "nvidia.com/gpu"
 	defaultPodsPerNode = 110
+	// Floor for classes whose /disk the API omits (bare metal, deprecated micro).
+	defaultEphemeralStorageGi = 40
+	serverClassesPath         = "/apis/ngpc.rxt.io/v1/serverclasses"
 )
 
 // Provider serves Karpenter cloudprovider.InstanceType objects translated from
@@ -44,7 +50,7 @@ type Provider interface {
 }
 
 type DefaultProvider struct {
-	api          rxtspot.SpotServerClassesAPI
+	client       *rxtspot.RackspaceSpotClient
 	refreshAfter time.Duration
 
 	mu    sync.Mutex
@@ -53,70 +59,125 @@ type DefaultProvider struct {
 
 type regionCache struct {
 	classes []rxtspot.ServerClass
+	disks   map[string]string
 	fetched time.Time
 }
 
-func NewProvider(api rxtspot.SpotServerClassesAPI) *DefaultProvider {
+func NewProvider(client *rxtspot.RackspaceSpotClient) *DefaultProvider {
 	return &DefaultProvider{
-		api:          api,
+		client:       client,
 		refreshAfter: 5 * time.Minute,
 		cache:        map[string]regionCache{},
 	}
 }
 
 func (p *DefaultProvider) List(ctx context.Context, region string) ([]*karpcloudprovider.InstanceType, error) {
-	classes, err := p.classes(ctx, region)
+	c, err := p.load(ctx, region)
 	if err != nil {
 		return nil, err
 	}
-	return lo.Map(classes, func(sc rxtspot.ServerClass, _ int) *karpcloudprovider.InstanceType {
-		return translate(sc)
+	return lo.Map(c.classes, func(sc rxtspot.ServerClass, _ int) *karpcloudprovider.InstanceType {
+		return translate(sc, c.disks[sc.Name])
 	}), nil
 }
 
 func (p *DefaultProvider) Get(ctx context.Context, region, name string) (*karpcloudprovider.InstanceType, error) {
-	classes, err := p.classes(ctx, region)
+	c, err := p.load(ctx, region)
 	if err != nil {
 		return nil, err
 	}
-	sc, found := lo.Find(classes, func(s rxtspot.ServerClass) bool { return s.Name == name })
+	sc, found := lo.Find(c.classes, func(s rxtspot.ServerClass) bool { return s.Name == name })
 	if !found {
 		return nil, fmt.Errorf("server class %q not found in region %q", name, region)
 	}
-	return translate(sc), nil
+	return translate(sc, c.disks[sc.Name]), nil
 }
 
 func (p *DefaultProvider) MinBidPrice(ctx context.Context, region, name string) (float64, error) {
-	classes, err := p.classes(ctx, region)
+	c, err := p.load(ctx, region)
 	if err != nil {
 		return 0, err
 	}
-	sc, found := lo.Find(classes, func(s rxtspot.ServerClass) bool { return s.Name == name })
+	sc, found := lo.Find(c.classes, func(s rxtspot.ServerClass) bool { return s.Name == name })
 	if !found {
 		return 0, fmt.Errorf("server class %q not found in region %q", name, region)
 	}
 	return parsePrice(sc.MinBidPricePerHour), nil
 }
 
-func (p *DefaultProvider) classes(ctx context.Context, region string) ([]rxtspot.ServerClass, error) {
+func (p *DefaultProvider) load(ctx context.Context, region string) (regionCache, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if c, ok := p.cache[region]; ok && time.Since(c.fetched) < p.refreshAfter {
-		return c.classes, nil
+		return c, nil
 	}
-	list, err := p.api.ListServerClasses(ctx, region)
+	list, err := p.client.ListServerClasses(ctx, region)
 	if err != nil {
-		return nil, fmt.Errorf("listing server classes in %s: %w", region, err)
+		return regionCache{}, fmt.Errorf("listing server classes in %s: %w", region, err)
 	}
-	p.cache[region] = regionCache{classes: list.Items, fetched: time.Now()}
-	return list.Items, nil
+	disks, err := p.fetchDisks(ctx)
+	if err != nil {
+		disks = map[string]string{} // non-fatal: translate falls back to the floor
+	}
+	c := regionCache{classes: list.Items, disks: disks, fetched: time.Now()}
+	p.cache[region] = c
+	return c, nil
 }
 
-func translate(sc rxtspot.ServerClass) *karpcloudprovider.InstanceType {
+// fetchDisks maps ServerClass name to its raw disk string. The SDK decodes
+// resources as {cpu, memory} only, dropping disk, so we read the raw endpoint.
+func (p *DefaultProvider) fetchDisks(ctx context.Context) (map[string]string, error) {
+	token, err := p.client.Authenticate(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("authenticating for disk lookup: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.client.BaseURL+serverClassesPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := p.client.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("serverclasses disk lookup: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var payload struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				Resources struct {
+					Disk string `json:"disk"`
+				} `json:"resources"`
+			} `json:"spec"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decoding serverclasses disk lookup: %w", err)
+	}
+	disks := make(map[string]string, len(payload.Items))
+	for _, it := range payload.Items {
+		if it.Spec.Resources.Disk != "" {
+			disks[it.Metadata.Name] = it.Spec.Resources.Disk
+		}
+	}
+	return disks, nil
+}
+
+func translate(sc rxtspot.ServerClass, disk string) *karpcloudprovider.InstanceType {
 	capacity := corev1.ResourceList{
-		corev1.ResourceCPU:    parseQuantity(sc.Resources.CPU),
-		corev1.ResourceMemory: parseQuantity(sc.Resources.Memory),
-		corev1.ResourcePods:   *resource.NewQuantity(defaultPodsPerNode, resource.DecimalSI),
+		corev1.ResourceCPU:              parseQuantity(sc.Resources.CPU),
+		corev1.ResourceMemory:           parseQuantity(sc.Resources.Memory),
+		corev1.ResourceEphemeralStorage: ephemeralStorage(disk),
+		corev1.ResourcePods:             *resource.NewQuantity(defaultPodsPerNode, resource.DecimalSI),
 	}
 	if gpu := parseQuantity(sc.Resources.GPU); !gpu.IsZero() {
 		capacity[resourceNvidiaGPU] = gpu
@@ -180,6 +241,13 @@ func rackspaceUnitFix(s string) string {
 		}
 	}
 	return s
+}
+
+func ephemeralStorage(disk string) resource.Quantity {
+	if q := parseQuantity(disk); !q.IsZero() {
+		return q
+	}
+	return *resource.NewQuantity(defaultEphemeralStorageGi*(1<<30), resource.BinarySI)
 }
 
 func parseQuantity(s string) resource.Quantity {
