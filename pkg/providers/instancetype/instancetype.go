@@ -184,16 +184,15 @@ func (p *DefaultProvider) load(ctx context.Context, region string) (regionCache,
 // fetchDisks maps ServerClass name to its raw disk string. The SDK decodes
 // resources as {cpu, memory} only, dropping disk, so we read the raw endpoint.
 func (p *DefaultProvider) fetchDisks(ctx context.Context) (map[string]string, error) {
-	token, err := p.client.Authenticate(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("authenticating for disk lookup: %w", err)
-	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.client.BaseURL+serverClassesPath, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
+	// No Authorization header: the auth transport on this client sets one,
+	// overwriting whatever is here. Calling the SDK's Authenticate() to build
+	// it by hand would write the client's shared token field from whichever
+	// goroutine happened to miss the cache. See pkg/auth.
 
 	resp, err := p.client.HTTPClient.Do(req)
 	if err != nil {
