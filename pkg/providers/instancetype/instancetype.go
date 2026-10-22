@@ -84,9 +84,13 @@ type DefaultProvider struct {
 	client       *rxtspot.RackspaceSpotClient
 	refreshAfter time.Duration
 
-	mu         sync.Mutex
-	cache      map[string]regionCache
-	discovered map[string]corev1.ResourceList
+	mu    sync.Mutex
+	cache map[string]regionCache
+
+	// discoveredMu is separate from mu so a slow refresh in load does not
+	// block nodes reporting capacity.
+	discoveredMu sync.Mutex
+	discovered   map[string]corev1.ResourceList
 }
 
 type regionCache struct {
@@ -127,8 +131,8 @@ func (p *DefaultProvider) Get(ctx context.Context, region, name string) (*karpcl
 }
 
 func (p *DefaultProvider) UpdateFromNode(instanceType string, capacity corev1.ResourceList) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.discoveredMu.Lock()
+	defer p.discoveredMu.Unlock()
 	for _, name := range discoveredResources {
 		reported, ok := capacity[name]
 		if !ok || reported.IsZero() {
@@ -145,8 +149,8 @@ func (p *DefaultProvider) UpdateFromNode(instanceType string, capacity corev1.Re
 }
 
 func (p *DefaultProvider) discoveredFor(instanceType string) corev1.ResourceList {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.discoveredMu.Lock()
+	defer p.discoveredMu.Unlock()
 	return p.discovered[instanceType].DeepCopy()
 }
 
