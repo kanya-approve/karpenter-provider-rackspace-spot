@@ -103,9 +103,19 @@ func (c *CloudProvider) Create(ctx context.Context, nc *karpv1.NodeClaim) (*karp
 		return nil, fmt.Errorf("creating pool: %w", err)
 	}
 
-	assigned, err := c.instances.ServerAssigned(ctx, pool.Name)
+	// The cloudspace's AssignedServers can lag minutes behind the VM actually
+	// joining, and every minute spent here comes out of the registration
+	// timeout, which started when the NodeClaim was created. A Node from this
+	// pool is proof enough.
+	node, err := c.joinedNode(ctx, pool.Name)
 	if err != nil {
-		return nil, fmt.Errorf("checking server assignment for pool %s: %w", pool.Name, err)
+		return nil, err
+	}
+	assigned := node != nil
+	if !assigned {
+		if assigned, err = c.instances.ServerAssigned(ctx, pool.Name); err != nil {
+			return nil, fmt.Errorf("checking server assignment for pool %s: %w", pool.Name, err)
+		}
 	}
 
 	// Hydrate in place even when returning the error below: the lifecycle
@@ -115,6 +125,11 @@ func (c *CloudProvider) Create(ctx context.Context, nc *karpv1.NodeClaim) (*karp
 	// and disruption cluster-wide; without capacity, StateNode.Capacity() reads
 	// zero and the scheduler provisions a second claim for the same pod.
 	hydrate(nc, pool, instType, capacityType, c.region)
+	if node != nil {
+		// Return the providerID nodelink would rewrite to, rather than handing
+		// back the synthetic one for it to fix up on the Node's next update.
+		nc.Status.ProviderID = node.Spec.ProviderID
+	}
 
 	// Launched=Unknown keeps the wait under LaunchTimeout rather than the
 	// registration timeout's fixed 15m const. Retrying is safe: the pool is
@@ -127,6 +142,22 @@ func (c *CloudProvider) Create(ctx context.Context, nc *karpv1.NodeClaim) (*karp
 			fmt.Sprintf("Rackspace has not attached a server to pool %s (status %q)", pool.Name, pool.Status))
 	}
 	return nc, nil
+}
+
+// joinedNode returns the Node that pool's server joined the cluster as, once
+// the CCM has set its providerID, or nil if it hasn't joined yet.
+func (c *CloudProvider) joinedNode(ctx context.Context, poolName string) (*corev1.Node, error) {
+	var nodes corev1.NodeList
+	if err := c.kubeClient.List(ctx, &nodes); err != nil {
+		return nil, fmt.Errorf("listing nodes: %w", err)
+	}
+	for i := range nodes.Items {
+		if strings.HasPrefix(nodes.Items[i].Annotations[instance.MachineAnnotation], poolName+"-") &&
+			nodes.Items[i].Spec.ProviderID != "" {
+			return &nodes.Items[i], nil
+		}
+	}
+	return nil, nil
 }
 
 func (c *CloudProvider) Delete(ctx context.Context, nc *karpv1.NodeClaim) error {
@@ -337,6 +368,12 @@ func hydrate(out *karpv1.NodeClaim, pool *instance.Pool, it *karpcloudprovider.I
 	out.Labels[corev1.LabelTopologyRegion] = region
 	out.Labels[corev1.LabelArchStable] = karpv1.ArchitectureAmd64
 	out.Labels[corev1.LabelOSStable] = string(corev1.Linux)
+	// The pool carries these too, but Rackspace copies pool labels onto the
+	// Node minutes after it joins. On the NodeClaim, Karpenter syncs them at
+	// registration, so Get and List can find the Node right away.
+	out.Labels[instance.KarpenterManagedLabel] = "true"
+	out.Labels[instance.NodeClaimNameLabel] = out.Name
+	out.Labels[instance.NodeClaimUIDLabel] = string(out.UID)
 }
 
 // poolToClaim materializes a minimal NodeClaim from an existing pool. Capacity

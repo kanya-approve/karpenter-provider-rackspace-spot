@@ -40,6 +40,11 @@ const (
 	KarpenterManagedLabel = "karpenter.rackspace.com/managed"
 	NodeClaimNameLabel    = "karpenter.rackspace.com/nodeclaim-name"
 	NodeClaimUIDLabel     = "karpenter.rackspace.com/nodeclaim-uid"
+
+	// MachineAnnotation names the Cluster API Machine backing a Node:
+	// <pool name>-<machineset hash>-<machine hash>. Rackspace sets it within
+	// seconds of the Node joining, minutes before it syncs the pool's labels.
+	MachineAnnotation = "cluster.x-k8s.io/machine"
 )
 
 // ErrPoolNotFound is returned by Get/Delete when the pool no longer exists.
