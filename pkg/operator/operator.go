@@ -22,6 +22,7 @@ import (
 	karpoperator "sigs.k8s.io/karpenter/pkg/operator"
 
 	apiv1 "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/apis/v1"
+	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/auth"
 	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/instance"
 	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/instancetype"
 	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/pricing"
@@ -73,6 +74,12 @@ func NewOperator(ctx context.Context, coreOp *karpoperator.Operator) (context.Co
 		panic(fmt.Errorf("authenticating to Rackspace Spot: %w", err))
 	}
 	logger.Info("authenticated to Rackspace Spot")
+
+	// The token obtained above expires in about an hour, and the SDK will not
+	// renew it on its own -- every request it builds reads the token field set
+	// right here, once. Hand it to a transport that refreshes on expiry so the
+	// controller keeps working past the first hour without being restarted.
+	auth.Install(client)
 
 	orgs, err := client.ListOrganizations(ctx)
 	if err != nil {
