@@ -34,7 +34,7 @@ const (
 )
 
 // stubInstanceTypeProvider returns a fixed instance-type list for
-// pickInstanceType tests; Get/MinBidPrice are unused on that path.
+// pickInstanceType tests, and Get looks names up in that same list.
 type stubInstanceTypeProvider struct {
 	list []*karpcloudprovider.InstanceType
 }
@@ -45,8 +45,13 @@ func (s *stubInstanceTypeProvider) List(context.Context, string) ([]*karpcloudpr
 	return s.list, nil
 }
 
-func (s *stubInstanceTypeProvider) Get(context.Context, string, string) (*karpcloudprovider.InstanceType, error) {
-	return nil, errors.New("unused")
+func (s *stubInstanceTypeProvider) Get(_ context.Context, _, name string) (*karpcloudprovider.InstanceType, error) {
+	for _, it := range s.list {
+		if it.Name == name {
+			return it, nil
+		}
+	}
+	return nil, errors.New("not found")
 }
 
 func (s *stubInstanceTypeProvider) MinBidPrice(context.Context, string, string) (float64, error) {
@@ -222,17 +227,23 @@ func TestPickInstanceType_PrefersSpotWhenAllowed(t *testing.T) {
 }
 
 // fakeInstanceProvider records the providerID passed to Delete so the test can
-// assert which pool kind was targeted.
+// assert which pool kind was targeted. A non-empty serverClass stands in for a
+// pool that already exists with that class.
 type fakeInstanceProvider struct {
-	deleted  string
-	assigned bool
+	deleted     string
+	assigned    bool
+	serverClass string
 }
 
 var _ instance.Provider = (*fakeInstanceProvider)(nil)
 
-func (f *fakeInstanceProvider) Create(_ context.Context, _ *apiv1.RackspaceSpotNodeClass, nc *karpv1.NodeClaim, _ []*karpcloudprovider.InstanceType, _ string) (*instance.Pool, error) {
+func (f *fakeInstanceProvider) Create(_ context.Context, _ *apiv1.RackspaceSpotNodeClass, nc *karpv1.NodeClaim, its []*karpcloudprovider.InstanceType, _ string) (*instance.Pool, error) {
 	name := string(nc.UID)
-	return &instance.Pool{Name: name, ProviderID: instance.MakeProviderID(testCloudspace, instance.PoolTypeSpot, name)}, nil
+	serverClass := f.serverClass
+	if serverClass == "" {
+		serverClass = its[0].Name
+	}
+	return &instance.Pool{Name: name, ServerClass: serverClass, ProviderID: instance.MakeProviderID(testCloudspace, instance.PoolTypeSpot, name)}, nil
 }
 func (f *fakeInstanceProvider) Get(context.Context, string) (*instance.Pool, error) {
 	return nil, instance.ErrPoolNotFound
@@ -342,5 +353,51 @@ func TestCreate_AwaitsServerAssignment(t *testing.T) {
 				t.Errorf("instance-type label = %q, want gp.small", claim.Labels[corev1.LabelInstanceTypeStable])
 			}
 		})
+	}
+}
+
+// A retry finds the pool from an earlier attempt, whose class may no longer be
+// the cheapest. The NodeClaim must describe that pool's class, not the new
+// pick, or it carries the wrong instance-type label and capacity.
+func TestCreate_RetryKeepsPoolServerClass(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := apiv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	nodeClass := &apiv1.RackspaceSpotNodeClass{}
+	nodeClass.Name = "default"
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(nodeClass).Build()
+
+	large := makeInstanceType("ch.large", 0.02, 0.06)
+	large.Capacity = corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("4"),
+		corev1.ResourceMemory: resource.MustParse("8Gi"),
+		corev1.ResourcePods:   *resource.NewQuantity(110, resource.DecimalSI),
+	}
+	c := &CloudProvider{
+		kubeClient: kubeClient,
+		// The pool was created as ch.large, but mh.medium is cheapest now.
+		instances: &fakeInstanceProvider{assigned: true, serverClass: "ch.large"},
+		instanceType: &stubInstanceTypeProvider{list: []*karpcloudprovider.InstanceType{
+			makeInstanceType("mh.medium", 0.01, 0.03),
+			large,
+		}},
+		cloudspace: testCloudspace,
+		region:     testRegion,
+	}
+
+	nc := newClaim(karpv1.CapacityTypeSpot, "mh.medium", "ch.large")
+	nc.UID = "uid-2"
+	nc.Spec.NodeClassRef = &karpv1.NodeClassReference{Kind: NodeClassKind, Name: "default"}
+
+	got, err := c.Create(context.Background(), nc)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if it := got.Labels[corev1.LabelInstanceTypeStable]; it != "ch.large" {
+		t.Errorf("instance-type label = %q, want ch.large (the pool's class)", it)
+	}
+	if cpu := got.Status.Capacity[corev1.ResourceCPU]; cpu.Cmp(resource.MustParse("4")) != 0 {
+		t.Errorf("cpu capacity = %s, want 4 (ch.large)", cpu.String())
 	}
 }
