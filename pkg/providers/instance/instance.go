@@ -37,9 +37,15 @@ const (
 
 	// KarpenterManagedLabel marks ours vs. foreign pools. Rackspace's
 	// admission webhook forbids name prefixes (pool names must be a bare UUID).
+	// On the pool these three are annotations, not labels: see poolAnnotations.
 	KarpenterManagedLabel = "karpenter.rackspace.com/managed"
 	NodeClaimNameLabel    = "karpenter.rackspace.com/nodeclaim-name"
 	NodeClaimUIDLabel     = "karpenter.rackspace.com/nodeclaim-uid"
+
+	// MachineAnnotation names the Cluster API Machine backing a Node:
+	// <pool name>-<machineset hash>-<machine hash>. Rackspace sets it within
+	// seconds of the Node joining, minutes before it syncs the pool's labels.
+	MachineAnnotation = "cluster.x-k8s.io/machine"
 )
 
 // ErrPoolNotFound is returned by Get/Delete when the pool no longer exists.
@@ -123,7 +129,8 @@ func (p *DefaultProvider) Create(ctx context.Context, nodeClass *apiv1.Rackspace
 	name := PoolName(nodeClaim)
 	cloudspace := p.cloudspace
 	serverClass := instanceType.Name
-	labels := mergeLabels(nodeClass, nodeClaim, instanceType, capacityType)
+	labels := nodeClass.Spec.Labels
+	annotations := poolAnnotations(nodeClass, nodeClaim)
 	taints := convertTaints(nodeClass.Spec.Taints)
 
 	switch capacityType {
@@ -140,7 +147,7 @@ func (p *DefaultProvider) Create(ctx context.Context, nodeClass *apiv1.Rackspace
 			Desired:           1,
 			BidPrice:          bid,
 			CustomLabels:      labels,
-			CustomAnnotations: nodeClass.Spec.Annotations,
+			CustomAnnotations: annotations,
 			CustomTaints:      taints,
 		}
 		if err := p.spot.CreateSpotNodePool(ctx, org, pool); err != nil && !isAlreadyExists(err) {
@@ -156,7 +163,7 @@ func (p *DefaultProvider) Create(ctx context.Context, nodeClass *apiv1.Rackspace
 			ServerClass:       serverClass,
 			Desired:           1,
 			CustomLabels:      labels,
-			CustomAnnotations: nodeClass.Spec.Annotations,
+			CustomAnnotations: annotations,
 			CustomTaints:      taints,
 		}
 		if err := p.onDemand.CreateOnDemandNodePool(ctx, org, pool); err != nil && !isAlreadyExists(err) {
@@ -252,13 +259,13 @@ func (p *DefaultProvider) List(ctx context.Context) ([]*Pool, error) {
 
 	pools := make([]*Pool, 0, len(spots)+len(ods))
 	for _, sp := range spots {
-		if sp.CustomLabels[KarpenterManagedLabel] != "true" {
+		if !isManaged(sp.CustomLabels, sp.CustomAnnotations) {
 			continue
 		}
 		pools = append(pools, spotToPool(sp, cloudspace))
 	}
 	for _, od := range ods {
-		if od.CustomLabels[KarpenterManagedLabel] != "true" {
+		if !isManaged(od.CustomLabels, od.CustomAnnotations) {
 			continue
 		}
 		pools = append(pools, onDemandToPool(od, cloudspace))
@@ -423,23 +430,39 @@ func onDemandToPool(od *rxtspot.OnDemandNodePool, cloudspace string) *Pool {
 	}
 }
 
-// See GH issue #9.
-func mergeLabels(nodeClass *apiv1.RackspaceSpotNodeClass, nc *karpv1.NodeClaim, instanceType *karpcloudprovider.InstanceType, capacityType string) map[string]string {
-	zone := instanceType.Requirements.Get(corev1.LabelTopologyZone).Any()
+// poolAnnotations adds our bookkeeping to the NodeClass's annotations.
+//
+// These, along with capacity-type, zone and nodepool, used to be pool labels.
+// Rackspace copies a pool's labels onto its Node minutes after it joins, and
+// reports a metadata conflict for any key the Node already has, even with the
+// same value. Karpenter copies the NodeClaim's labels, which include all of
+// these, onto the Node at registration, and now that nodelink links on the
+// Cluster API machine, registration wins that race every time. So the pool
+// carries only the NodeClass's labels, and Karpenter alone labels the Node
+// with the rest (see hydrate in the cloudprovider package).
+func poolAnnotations(nodeClass *apiv1.RackspaceSpotNodeClass, nc *karpv1.NodeClaim) map[string]string {
 	out := map[string]string{
-		KarpenterManagedLabel:       "true",
-		NodeClaimNameLabel:          nc.Name,
-		NodeClaimUIDLabel:           string(nc.UID),
-		karpv1.CapacityTypeLabelKey: capacityType,
-		corev1.LabelTopologyZone:    zone,
+		KarpenterManagedLabel: "true",
+		NodeClaimNameLabel:    nc.Name,
+		NodeClaimUIDLabel:     string(nc.UID),
 	}
-	if np := nc.Labels[karpv1.NodePoolLabelKey]; np != "" {
-		out[karpv1.NodePoolLabelKey] = np
-	}
-	for k, v := range nodeClass.Spec.Labels {
+	for k, v := range nodeClass.Spec.Annotations {
 		out[k] = v
 	}
 	return out
+}
+
+func isManaged(labels, annotations map[string]string) bool {
+	return annotations[KarpenterManagedLabel] == "true" || labels[KarpenterManagedLabel] == "true"
+}
+
+// Meta returns one of the pool's bookkeeping values. Pools created before they
+// moved to annotations still carry them as labels.
+func (p *Pool) Meta(key string) string {
+	if v := p.Annotations[key]; v != "" {
+		return v
+	}
+	return p.Labels[key]
 }
 
 func convertTaints(taints []corev1.Taint) []interface{} {
