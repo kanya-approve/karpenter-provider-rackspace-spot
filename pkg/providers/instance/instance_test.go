@@ -13,6 +13,7 @@ package instance
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strconv"
 	"testing"
 
@@ -199,14 +200,19 @@ func TestCreateSpot_HappyPath(t *testing.T) {
 	if captured.Desired != 1 {
 		t.Errorf("Desired = %d, want 1", captured.Desired)
 	}
-	if captured.CustomLabels[KarpenterManagedLabel] != "true" {
-		t.Errorf("expected %s=true on pool labels", KarpenterManagedLabel)
+	if captured.CustomAnnotations[KarpenterManagedLabel] != "true" {
+		t.Errorf("expected %s=true on pool annotations", KarpenterManagedLabel)
 	}
-	if captured.CustomLabels[NodeClaimUIDLabel] != "uid-1" {
-		t.Errorf("expected %s=uid-1 on pool labels", NodeClaimUIDLabel)
+	if captured.CustomAnnotations[NodeClaimUIDLabel] != "uid-1" {
+		t.Errorf("expected %s=uid-1 on pool annotations", NodeClaimUIDLabel)
 	}
-	if captured.CustomLabels["team"] != "platform" {
-		t.Errorf("custom label 'team' not propagated")
+	if pool.Meta(NodeClaimUIDLabel) != "uid-1" {
+		t.Errorf("pool.Meta(%s) = %q, want uid-1", NodeClaimUIDLabel, pool.Meta(NodeClaimUIDLabel))
+	}
+	// Karpenter puts everything but the NodeClass's labels on the Node itself;
+	// any of it on the pool makes Rackspace report a metadata conflict.
+	if want := map[string]string{"team": "platform"}; !reflect.DeepEqual(captured.CustomLabels, want) {
+		t.Errorf("pool labels = %v, want %v", captured.CustomLabels, want)
 	}
 }
 
@@ -333,7 +339,9 @@ func TestList_FiltersForeignPools(t *testing.T) {
 	api.MockSpotNodePoolAPI.EXPECT().
 		ListSpotNodePools(gomock.Any(), testOrgID, testCloudspace).
 		Return([]*rxtspot.SpotNodePool{
-			{Name: "a-karpenter-pool", Cloudspace: testCloudspace, ServerClass: testServerCls, CustomLabels: karpLabel},
+			{Name: "a-karpenter-pool", Cloudspace: testCloudspace, ServerClass: testServerCls, CustomAnnotations: karpLabel},
+			// Created before the bookkeeping moved to annotations.
+			{Name: "c-karpenter-pool", Cloudspace: testCloudspace, ServerClass: testServerCls, CustomLabels: karpLabel},
 			{Name: "manually-managed", Cloudspace: testCloudspace, ServerClass: testServerCls},
 		}, nil)
 	api.MockOnDemandNodePoolAPI.EXPECT().
@@ -346,11 +354,11 @@ func TestList_FiltersForeignPools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List returned error: %v", err)
 	}
-	if len(pools) != 2 {
-		t.Fatalf("expected 2 karpenter-managed pools, got %d", len(pools))
+	if len(pools) != 3 {
+		t.Fatalf("expected 3 karpenter-managed pools, got %d", len(pools))
 	}
 	for _, pool := range pools {
-		if pool.Labels[KarpenterManagedLabel] != "true" {
+		if pool.Meta(KarpenterManagedLabel) != "true" {
 			t.Errorf("List returned a foreign pool %q", pool.Name)
 		}
 	}

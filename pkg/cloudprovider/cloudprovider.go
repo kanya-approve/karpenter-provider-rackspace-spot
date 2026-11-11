@@ -255,7 +255,7 @@ func (c *CloudProvider) List(ctx context.Context) ([]*karpv1.NodeClaim, error) {
 	claims := make([]*karpv1.NodeClaim, 0, len(pools))
 	for _, p := range pools {
 		nc := c.poolToClaim(ctx, p)
-		if node, ok := nodeByUID[p.Labels[instance.NodeClaimUIDLabel]]; ok && node.Spec.ProviderID != "" {
+		if node, ok := nodeByUID[p.Meta(instance.NodeClaimUIDLabel)]; ok && node.Spec.ProviderID != "" {
 			nc.Status.ProviderID = node.Spec.ProviderID
 		}
 		claims = append(claims, nc)
@@ -368,9 +368,9 @@ func hydrate(out *karpv1.NodeClaim, pool *instance.Pool, it *karpcloudprovider.I
 	out.Labels[corev1.LabelTopologyRegion] = region
 	out.Labels[corev1.LabelArchStable] = karpv1.ArchitectureAmd64
 	out.Labels[corev1.LabelOSStable] = string(corev1.Linux)
-	// The pool carries these too, but Rackspace copies pool labels onto the
-	// Node minutes after it joins. On the NodeClaim, Karpenter syncs them at
-	// registration, so Get and List can find the Node right away.
+	// Karpenter copies these onto the Node at registration, so Get and List
+	// can find it right away. The pool must not carry them as labels: see
+	// poolAnnotations in the instance package.
 	out.Labels[instance.KarpenterManagedLabel] = "true"
 	out.Labels[instance.NodeClaimNameLabel] = out.Name
 	out.Labels[instance.NodeClaimUIDLabel] = string(out.UID)
@@ -382,8 +382,8 @@ func hydrate(out *karpv1.NodeClaim, pool *instance.Pool, it *karpcloudprovider.I
 // cache lookups fall over).
 func (c *CloudProvider) poolToClaim(ctx context.Context, p *instance.Pool) *karpv1.NodeClaim {
 	nc := &karpv1.NodeClaim{}
-	nc.Name = p.Labels[instance.NodeClaimNameLabel]
-	nc.UID = types.UID(p.Labels[instance.NodeClaimUIDLabel])
+	nc.Name = p.Meta(instance.NodeClaimNameLabel)
+	nc.UID = types.UID(p.Meta(instance.NodeClaimUIDLabel))
 	nc.Labels = map[string]string{
 		corev1.LabelInstanceTypeStable: p.ServerClass,
 		karpv1.CapacityTypeLabelKey:    p.CapacityType,
