@@ -39,6 +39,10 @@ generate: $(CONTROLLER_GEN) ## Generate CRDs, deepcopy; sync CRD into chart
 	$(CONTROLLER_GEN) crd paths="./pkg/apis/..." output:crd:artifacts:config=config/crd
 	mkdir -p charts/karpenter/crds
 	cp config/crd/*.yaml charts/karpenter/crds/
+	# Karpenter's own CRDs ship with the sigs.k8s.io/karpenter module; copy them
+	# from the version in go.mod so the chart matches the controller's API.
+	cp $$($(GO) list -m -f '{{.Dir}}' sigs.k8s.io/karpenter)/pkg/apis/crds/karpenter.sh_*.yaml charts/karpenter/crds/
+	chmod u+w charts/karpenter/crds/karpenter.sh_*.yaml
 
 KO_DOCKER_REPO ?= ghcr.io/kanya-approve/karpenter-provider-rackspace-spot
 TAG            ?= dev
