@@ -79,12 +79,6 @@ import (
 // the token is obtained, so injecting a token into it would recurse.
 const oauthTokenPath = "/oauth/token"
 
-// expiryLeeway is how long before the JWT's exp we treat it as already
-// expired, matching the SDK's own margin so behaviour doesn't change at the
-// boundary. It has to cover both clock skew against Rackspace and the flight
-// time of a request that reads the token now and is validated a moment later.
-const expiryLeeway = 60 * time.Second
-
 // oauthTimeout bounds the token exchange when the client it is made on has no
 // timeout of its own -- a hung OAuth request would otherwise block every
 // caller waiting behind the refresh lock.
