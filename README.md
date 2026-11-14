@@ -189,6 +189,33 @@ The full set has to be passed because `FEATURE_GATES` is parsed as a complete ov
 
 The controller reads `SPOT_REFRESH_TOKEN` (and other `SPOT_*` env vars per [spot-go-sdk Config](https://github.com/rackspace-spot/spot-go-sdk/blob/main/api/v1/client.go)). The chart wires this from `spot.refreshToken` or `spot.existingSecret`.
 
+The refresh token is redeemed for an `id_token` that Rackspace expires after
+about an hour. The controller renews it on demand: before each API request it
+checks the current token and, if it is within 60 seconds of expiring, redeems
+the refresh token for a new one first. Nothing runs on a timer, so an idle
+controller carries a spent token until the next call needs one. Either way it
+keeps running indefinitely on a single refresh token.
+
+Renewal needs a refresh token, so it only applies when you set
+`SPOT_REFRESH_TOKEN`. The SDK also accepts a bare `SPOT_ACCESS_TOKEN`, and
+there is nothing to renew from in that configuration: the controller sends that
+token as-is and stops working when Rackspace expires it, which is the old
+behaviour. It does at least say so — `rackspace spot token expired at ... and
+there is no refresh token to renew it` — rather than reporting it as a
+permissions error.
+
+Before this was handled, the token was obtained once at startup and never
+renewed, and roughly an hour in every call began failing with
+
+```
+access denied: you do not have permission to list the region ''
+```
+
+which reads like a permissions problem and is really an expired token. The
+controller could no longer list server classes, so it stopped provisioning until
+the pod was restarted. If you are carrying a cron job that restarts the
+Deployment on a timer to work around that, it is no longer needed.
+
 ## What's verified
 
 | Flow | Notes |
