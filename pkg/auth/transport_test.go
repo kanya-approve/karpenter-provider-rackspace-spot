@@ -11,8 +11,11 @@ You may obtain a copy of the License at
 package auth
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cenkalti/backoff/v5"
 	rxtspot "github.com/rackspace-spot/spot-go-sdk/api/v1"
 )
 
@@ -382,8 +386,8 @@ func TestInstallRefreshesOnACopyOfTheSDKClient(t *testing.T) {
 	if got, want := tr.sdk.HTTPClient.Timeout, 7*time.Second; got != want {
 		t.Errorf("oauth client dropped the SDK's timeout: got %v want %v", got, want)
 	}
-	if tr.sdk.HTTPClient.Transport != base {
-		t.Error("oauth client must keep the SDK's transport rather than the token injector or a bare default")
+	if tr.sdk.HTTPClient.Transport == tr {
+		t.Error("oauth client must not route the exchange through the token injector")
 	}
 
 	tok, err := tr.Token(t.Context())
@@ -516,5 +520,160 @@ func TestTokenWithoutARefreshTokenSendsASeedInsideTheLeeway(t *testing.T) {
 
 	if got, want := rec.headers()[0], "Bearer "+nearly; got != want {
 		t.Errorf("got %q want %q", got, want)
+	}
+}
+
+type statusOAuth struct {
+	recorder
+	status int
+}
+
+func (f *statusOAuth) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(req.URL.Path, oauthTokenPath) {
+		return &http.Response{StatusCode: f.status, Status: fmt.Sprintf("%d %s", f.status, http.StatusText(f.status)), Body: http.NoBody, Header: http.Header{}, Request: req}, nil
+	}
+	return f.recorder.RoundTrip(req)
+}
+
+func isPermanent(err error) bool {
+	var p *backoff.PermanentError
+	return errors.As(err, &p)
+}
+
+// The SDK retries any error from the transport as if the connection dropped:
+// ten attempts over as long as ten minutes. A token that cannot be had will not
+// turn up on the next attempt, so those failures must stop the loop, and only
+// an exchange that might succeed later may be retried.
+func TestRoundTripMarksTokenFailures(t *testing.T) {
+	for name, tc := range map[string]struct {
+		refreshToken string
+		seed         string
+		oauthStatus  int
+		temporary    bool
+	}{
+		"expired, nothing to renew it": {seed: jwt(t, -time.Minute)},
+		"no token at all":              {},
+		"refresh token refused":        {refreshToken: "rt", seed: jwt(t, -time.Minute), oauthStatus: http.StatusBadRequest},
+		"oauth endpoint 404":           {refreshToken: "rt", seed: jwt(t, -time.Minute), oauthStatus: http.StatusNotFound},
+		"oauth endpoint down":          {refreshToken: "rt", seed: jwt(t, -time.Minute), oauthStatus: http.StatusBadGateway, temporary: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tr := newTransport(&statusOAuth{status: tc.oauthStatus}, "https://spot.example", tc.refreshToken, tc.seed)
+			req, _ := http.NewRequest(http.MethodGet, "https://spot.example/x", nil)
+
+			_, err := tr.RoundTrip(req)
+
+			var authErr *AuthError
+			if !errors.As(err, &authErr) {
+				t.Fatalf("expected an AuthError, got %v", err)
+			}
+			if authErr.Temporary != tc.temporary {
+				t.Errorf("Temporary = %v, want %v", authErr.Temporary, tc.temporary)
+			}
+			if isPermanent(err) == tc.temporary {
+				t.Errorf("permanent = %v, want %v", isPermanent(err), !tc.temporary)
+			}
+		})
+	}
+}
+
+// A refresh that never got a response may well work on the next attempt.
+func TestRoundTripRetriesUnreachableOAuth(t *testing.T) {
+	down := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, errors.New("connection refused")
+	})
+	tr := newTransport(down, "https://spot.example", "rt", jwt(t, -time.Minute))
+	req, _ := http.NewRequest(http.MethodGet, "https://spot.example/x", nil)
+
+	_, err := tr.RoundTrip(req)
+
+	var authErr *AuthError
+	if !errors.As(err, &authErr) || !authErr.Temporary {
+		t.Fatalf("expected a temporary AuthError, got %v", err)
+	}
+	if isPermanent(err) {
+		t.Error("an unreachable token endpoint should be retried")
+	}
+}
+
+// The SDK flattens a 4xx into a sentence before it reaches us, so the status
+// has to leave the transport as a typed error, and stay final as the SDK
+// already treated it.
+func TestRoundTripReportsAPIErrors(t *testing.T) {
+	notFound := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`{"reason":"NotFound"}` + "\n")), Header: http.Header{}, Request: req}, nil
+	})
+	tr := newTransport(notFound, "https://spot.example", "rt", jwt(t, time.Hour))
+	req, _ := http.NewRequest(http.MethodDelete, "https://spot.example/apis/ngpc.rxt.io/v1/namespaces/o/spotnodepools/p", nil)
+
+	resp, err := tr.RoundTrip(req)
+
+	if resp != nil {
+		t.Error("a 4xx should come back as an error, not a response")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected an APIError, got %v", err)
+	}
+	want := APIError{StatusCode: 404, Method: http.MethodDelete, Path: "/apis/ngpc.rxt.io/v1/namespaces/o/spotnodepools/p", Body: `{"reason":"NotFound"}`}
+	if *apiErr != want {
+		t.Errorf("got %+v want %+v", *apiErr, want)
+	}
+	if !isPermanent(err) {
+		t.Error("a 4xx must not be retried")
+	}
+}
+
+// Successes and 5xx responses are the SDK's to handle: it decodes the one and
+// retries the other.
+func TestRoundTripPassesOtherStatusesThrough(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusFound, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: status, Body: http.NoBody, Header: http.Header{}, Request: req}, nil
+			})
+			tr := newTransport(base, "https://spot.example", "rt", jwt(t, time.Hour))
+			req, _ := http.NewRequest(http.MethodGet, "https://spot.example/x", nil)
+
+			resp, err := tr.RoundTrip(req)
+			if err != nil {
+				t.Fatalf("RoundTrip: %v", err)
+			}
+			if resp.StatusCode != status {
+				t.Errorf("got %d want %d", resp.StatusCode, status)
+			}
+		})
+	}
+}
+
+// End to end through the SDK: its retry loop must stop on the first attempt,
+// and the typed error must survive the SDK's own wrapping so callers can find
+// it with errors.As rather than by reading the message.
+func TestSDKStopsOnPermanentErrorsAndKeepsTheirType(t *testing.T) {
+	var calls atomic.Int32
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return &http.Response{StatusCode: http.StatusNotFound, Body: http.NoBody, Header: http.Header{}, Request: req}, nil
+	})
+	client := &rxtspot.RackspaceSpotClient{
+		BaseURL:      "https://spot.example",
+		OAuthURL:     "https://login.example",
+		RefreshToken: "rt",
+		Token:        jwt(t, time.Hour),
+		HTTPClient:   &http.Client{Transport: base},
+		RetryConfig:  rxtspot.RetryConfig{MaxRetries: 10, RetryWaitMax: time.Minute, InitialInterval: time.Second, Multiplier: 2},
+	}
+	Install(client)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, err := client.ListOrganizations(ctx)
+
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected a 404 APIError through the SDK, got %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("the SDK retried a permanent error: %d attempts", got)
 	}
 }

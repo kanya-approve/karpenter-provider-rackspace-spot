@@ -48,6 +48,13 @@ You may obtain a copy of the License at
 // injecting the startup token unchanged, which is the pre-existing behaviour,
 // minus the misleading permissions error: once that token is demonstrably
 // spent, calls fail saying so instead of coming back as "access denied".
+//
+// Failures leave here typed, and marked for the SDK's retry loop. The SDK
+// retries any error from http.Client.Do as if it were a dropped connection --
+// up to ten attempts over as long as ten minutes -- and gives up at once only
+// on a 4xx response. A token that cannot be had is no more likely to appear on
+// the next attempt than a 4xx is to turn into a 200, so both go back wrapped in
+// backoff.Permanent: see AuthError and APIError.
 package auth
 
 import (
@@ -56,6 +63,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -63,6 +71,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cenkalti/backoff/v5"
 	rxtspot "github.com/rackspace-spot/spot-go-sdk/api/v1"
 )
 
@@ -80,6 +89,11 @@ const expiryLeeway = 60 * time.Second
 // timeout of its own -- a hung OAuth request would otherwise block every
 // caller waiting behind the refresh lock.
 const oauthTimeout = 30 * time.Second
+
+// maxErrorBody caps how much of a 4xx response body an APIError carries. The
+// body is there to explain the status, and an error message is not the place
+// for an arbitrarily large one.
+const maxErrorBody = 4 << 10
 
 // Transport injects a current bearer token into every outbound Rackspace
 // request. The zero value is not usable; build one with Install.
@@ -102,7 +116,14 @@ type Transport struct {
 	// one there is nothing to redeem for a new id_token; see Token.
 	canRefresh bool
 
-	// mu guards sdk, whose Authenticate both reads and writes Token.
+	// oauthStatus is the status code of the last token exchange, or 0 if it
+	// got no response. Authenticate reports a rejected refresh token and an
+	// unreachable endpoint as the same untyped error, and only one of them is
+	// worth retrying.
+	oauthStatus int
+
+	// mu guards sdk and oauthStatus. Authenticate both reads and writes
+	// sdk.Token, and the exchange it makes writes oauthStatus.
 	mu sync.Mutex
 }
 
@@ -125,19 +146,29 @@ func Install(client *rxtspot.RackspaceSpotClient) *Transport {
 		base = http.DefaultTransport
 	}
 
+	t := &Transport{
+		base:       base,
+		canRefresh: client.RefreshToken != "",
+	}
+
 	oauthClient := *client.HTTPClient
-	oauthClient.Transport = base
+	oauthClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		// Authenticate only runs under t.mu, and Do calls this on the same
+		// goroutine, so the write is covered by that lock.
+		resp, err := base.RoundTrip(req)
+		t.oauthStatus = 0
+		if resp != nil {
+			t.oauthStatus = resp.StatusCode
+		}
+		return resp, err
+	})
 	if oauthClient.Timeout == 0 {
 		oauthClient.Timeout = oauthTimeout
 	}
 	sdk := *client
 	sdk.HTTPClient = &oauthClient
+	t.sdk = &sdk
 
-	t := &Transport{
-		base:       base,
-		sdk:        &sdk,
-		canRefresh: client.RefreshToken != "",
-	}
 	if u, err := url.Parse(client.BaseURL); err == nil && u.Scheme != "" && u.Host != "" {
 		t.apiOrigin = originOf(u)
 	}
@@ -170,14 +201,39 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	token, err := t.Token(req.Context())
 	if err != nil {
 		closeBody(req)
-		return nil, fmt.Errorf("refreshing rackspace spot token: %w", err)
+		var authErr *AuthError
+		if errors.As(err, &authErr) && !authErr.Temporary {
+			return nil, backoff.Permanent(err)
+		}
+		return nil, err
 	}
 
 	// RoundTrip must not mutate the request it is handed.
 	clone := req.Clone(req.Context())
 	clone.Header.Set("Authorization", "Bearer "+token)
-	return t.base.RoundTrip(clone)
+	resp, err := t.base.RoundTrip(clone)
+	if err != nil || resp.StatusCode < 400 || resp.StatusCode >= 500 {
+		return resp, err
+	}
+
+	// A 4xx comes back as an error rather than a response. That is against
+	// the letter of the RoundTripper contract, which wants every response
+	// returned whatever its status, but it is the only way the status code
+	// survives the SDK -- see APIError. The SDK already treats a 4xx as final,
+	// so marking it permanent keeps its retry behaviour as it was.
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+	_ = resp.Body.Close()
+	return nil, backoff.Permanent(&APIError{
+		StatusCode: resp.StatusCode,
+		Method:     req.Method,
+		Path:       req.URL.Path,
+		Body:       strings.TrimSpace(string(body)),
+	})
 }
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 // closeBody discharges the half of the RoundTripper contract that says the
 // body is closed even when no response comes back. http.Client closes it for
@@ -208,11 +264,11 @@ func (t *Transport) Token(ctx context.Context) (string, error) {
 	if !t.canRefresh {
 		tok := t.sdk.Token
 		if tok == "" {
-			return "", errors.New("no rackspace spot token available and no refresh token to obtain one (set SPOT_REFRESH_TOKEN)")
+			return "", &AuthError{Err: errors.New("no token configured and no refresh token to obtain one (set SPOT_REFRESH_TOKEN)")}
 		}
 		if exp, ok := expiry(tok); ok && !time.Now().Before(exp) {
-			return "", fmt.Errorf("rackspace spot token expired at %s and there is no refresh token to renew it (set SPOT_REFRESH_TOKEN)",
-				exp.UTC().Format(time.RFC3339))
+			return "", &AuthError{Err: fmt.Errorf("token expired at %s and there is no refresh token to renew it (set SPOT_REFRESH_TOKEN)",
+				exp.UTC().Format(time.RFC3339))}
 		}
 		return tok, nil
 	}
@@ -220,7 +276,15 @@ func (t *Transport) Token(ctx context.Context) (string, error) {
 	// Authenticate returns the cached token until it is within 60s of expiring,
 	// so a burst of concurrent requests past the expiry redeems the refresh
 	// token once: the rest queue on mu and then hit the cache.
-	return t.sdk.Authenticate(ctx)
+	t.oauthStatus = 0
+	tok, err := t.sdk.Authenticate(ctx)
+	if err != nil {
+		// No response at all, or a 5xx, may clear up. A 4xx is Rackspace
+		// refusing the refresh token, and a 200 that Authenticate could not
+		// use will be just as unusable next time.
+		return "", &AuthError{Err: err, Temporary: t.oauthStatus == 0 || t.oauthStatus >= 500}
+	}
+	return tok, nil
 }
 
 // origin is the scheme and host that decide whether a request is talking to
