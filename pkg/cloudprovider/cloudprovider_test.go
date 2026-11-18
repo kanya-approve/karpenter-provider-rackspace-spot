@@ -279,11 +279,15 @@ func TestCreate_AwaitsServerAssignment(t *testing.T) {
 	if err := apiv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
 	nodeClass := &apiv1.RackspaceSpotNodeClass{}
 	nodeClass.Name = "default"
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(nodeClass).Build()
 
 	nc := &karpv1.NodeClaim{}
+	nc.Name = "default-abc12"
 	nc.UID = "uid-1"
 	nc.Spec.NodeClassRef = &karpv1.NodeClassReference{Kind: NodeClassKind, Name: "default"}
 	nc.Spec.Requirements = []karpv1.NodeSelectorRequirementWithMinValues{
@@ -340,6 +344,86 @@ func TestCreate_AwaitsServerAssignment(t *testing.T) {
 			}
 			if claim.Labels[corev1.LabelInstanceTypeStable] != "gp.small" {
 				t.Errorf("instance-type label = %q, want gp.small", claim.Labels[corev1.LabelInstanceTypeStable])
+			}
+			// Karpenter copies NodeClaim labels onto the Node at registration;
+			// Get and List find the Node by these, long before Rackspace syncs
+			// the pool's copies.
+			for k, want := range map[string]string{
+				instance.KarpenterManagedLabel: "true",
+				instance.NodeClaimNameLabel:    "default-abc12",
+				instance.NodeClaimUIDLabel:     "uid-1",
+			} {
+				if got := claim.Labels[k]; got != want {
+					t.Errorf("label %s = %q, want %q", k, got, want)
+				}
+			}
+		})
+	}
+}
+
+// AssignedServers can lag minutes behind the VM joining, and that wait comes
+// out of the registration timeout. A Node from the pool counts as assigned, and
+// its providerID is returned so nodelink has nothing left to rewrite.
+func TestCreate_JoinedNodeCountsAsAssigned(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := apiv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	nodeClass := &apiv1.RackspaceSpotNodeClass{}
+	nodeClass.Name = "default"
+
+	for _, tc := range []struct {
+		name           string
+		machine        string
+		providerID     string
+		wantProviderID string // empty = Create should still be waiting
+	}{
+		{"node from this pool", "uid-1-bvdch-gbkjh", "openstack:///vm-1", "openstack:///vm-1"},
+		{"node from another pool", "uid-10-bvdch-gbkjh", "openstack:///vm-1", ""},
+		{"node without a providerID yet", "uid-1-bvdch-gbkjh", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			node := &corev1.Node{}
+			node.Name = "prod-instance-1"
+			node.Annotations = map[string]string{instance.MachineAnnotation: tc.machine}
+			node.Spec.ProviderID = tc.providerID
+			kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(nodeClass, node).Build()
+
+			c := &CloudProvider{
+				kubeClient: kubeClient,
+				instances:  &fakeInstanceProvider{assigned: false},
+				instanceType: &stubInstanceTypeProvider{list: []*karpcloudprovider.InstanceType{
+					makeInstanceType("gp.small", 0.01, 0.03),
+				}},
+				cloudspace: testCloudspace,
+				region:     testRegion,
+			}
+
+			nc := &karpv1.NodeClaim{}
+			nc.Name = "default-abc12"
+			nc.UID = "uid-1"
+			nc.Spec.NodeClassRef = &karpv1.NodeClassReference{Kind: NodeClassKind, Name: "default"}
+			nc.Spec.Requirements = []karpv1.NodeSelectorRequirementWithMinValues{
+				{Key: karpv1.CapacityTypeLabelKey, Operator: corev1.NodeSelectorOpIn, Values: []string{karpv1.CapacityTypeSpot}},
+				{Key: corev1.LabelInstanceTypeStable, Operator: corev1.NodeSelectorOpIn, Values: []string{"gp.small"}},
+			}
+
+			got, err := c.Create(context.Background(), nc)
+			if tc.wantProviderID == "" {
+				var createErr *karpcloudprovider.CreateError
+				if !errors.As(err, &createErr) {
+					t.Fatalf("Create = %v, want an AwaitingServerAssignment CreateError", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if got.Status.ProviderID != tc.wantProviderID {
+				t.Errorf("providerID = %q, want %q", got.Status.ProviderID, tc.wantProviderID)
 			}
 		})
 	}
