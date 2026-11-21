@@ -318,12 +318,6 @@ func preferSpot(nc *karpv1.NodeClaim, instanceTypes []*karpcloudprovider.Instanc
 	return false
 }
 
-func (c *CloudProvider) hydrateClaim(orig *karpv1.NodeClaim, pool *instance.Pool, it *karpcloudprovider.InstanceType, capacityType, region string) *karpv1.NodeClaim {
-	out := orig.DeepCopy()
-	hydrate(out, pool, it, capacityType, region)
-	return out
-}
-
 func hydrate(out *karpv1.NodeClaim, pool *instance.Pool, it *karpcloudprovider.InstanceType, capacityType, region string) {
 	out.Status.ProviderID = pool.ProviderID
 	out.Status.Capacity = it.Capacity

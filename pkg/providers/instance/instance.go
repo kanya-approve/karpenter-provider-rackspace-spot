@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -25,6 +26,7 @@ import (
 	karpcloudprovider "sigs.k8s.io/karpenter/pkg/cloudprovider"
 
 	apiv1 "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/apis/v1"
+	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/auth"
 	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/instancetype"
 	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/pricing"
 )
@@ -192,7 +194,7 @@ func (p *DefaultProvider) Get(ctx context.Context, providerID string) (*Pool, er
 	case PoolTypeSpot:
 		sp, err := p.spot.GetSpotNodePool(ctx, org, name)
 		if err != nil {
-			if isNotFound(err) {
+			if isPoolNotFound(err, spotPoolsPath, name) {
 				return nil, ErrPoolNotFound
 			}
 			return nil, fmt.Errorf("getting spot pool %s: %w", name, err)
@@ -201,7 +203,7 @@ func (p *DefaultProvider) Get(ctx context.Context, providerID string) (*Pool, er
 	case PoolTypeOnDemand:
 		od, err := p.onDemand.GetOnDemandNodePool(ctx, org, name)
 		if err != nil {
-			if isNotFound(err) {
+			if isPoolNotFound(err, onDemandPoolsPath, name) {
 				return nil, ErrPoolNotFound
 			}
 			return nil, fmt.Errorf("getting on-demand pool %s: %w", name, err)
@@ -220,7 +222,7 @@ func (p *DefaultProvider) Delete(ctx context.Context, providerID string) error {
 	switch kind {
 	case PoolTypeSpot:
 		if err := p.spot.DeleteSpotNodePool(ctx, org, name); err != nil {
-			if isNotFound(err) {
+			if isPoolNotFound(err, spotPoolsPath, name) {
 				return ErrPoolNotFound
 			}
 			return fmt.Errorf("deleting spot pool %s: %w", name, err)
@@ -228,7 +230,7 @@ func (p *DefaultProvider) Delete(ctx context.Context, providerID string) error {
 		return nil
 	case PoolTypeOnDemand:
 		if err := p.onDemand.DeleteOnDemandNodePool(ctx, org, name); err != nil {
-			if isNotFound(err) {
+			if isPoolNotFound(err, onDemandPoolsPath, name) {
 				return ErrPoolNotFound
 			}
 			return fmt.Errorf("deleting on-demand pool %s: %w", name, err)
@@ -459,26 +461,29 @@ func convertTaints(taints []corev1.Taint) []interface{} {
 	return out
 }
 
-// isAlreadyExists / isNotFound do best-effort error classification. The SDK
-// returns wrapped HTTPStatusError without exposing a typed sentinel, so we
-// inspect the message. See GH issue #4 (rate-limit / quota work) for the
-// follow-up to wire structured error handling end-to-end.
+const (
+	spotPoolsPath     = "spotnodepools"
+	onDemandPoolsPath = "ondemandnodepools"
+)
+
+// isAlreadyExists reports whether a create was refused because the pool is
+// already there, which is how a retried Create finds the pool its first
+// attempt made. A pool POST is the only request a create sends that can
+// conflict.
 func isAlreadyExists(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "AlreadyExists") ||
-		strings.Contains(msg, "already exists") ||
-		strings.Contains(msg, " 409 ")
+	var apiErr *auth.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict
 }
 
-func isNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "NotFound") ||
-		strings.Contains(msg, "not found") ||
-		strings.Contains(msg, " 404 ")
+// isPoolNotFound reports whether err is the Spot API saying that this pool
+// does not exist. The status alone is not enough: a Get also looks up the
+// organization, and for an on-demand pool the server class, and a 404 from
+// either of those says nothing about the pool. Reading it as "pool gone"
+// would have Karpenter release a NodeClaim, or drop the finalizer on a Delete,
+// while the pool is still running and billing.
+func isPoolNotFound(err error, collection, name string) bool {
+	var apiErr *auth.APIError
+	return errors.As(err, &apiErr) &&
+		apiErr.StatusCode == http.StatusNotFound &&
+		strings.HasSuffix(apiErr.Path, "/"+collection+"/"+name)
 }

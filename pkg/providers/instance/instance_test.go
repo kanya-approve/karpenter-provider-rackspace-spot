@@ -13,6 +13,8 @@ package instance
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"strconv"
 	"testing"
 
@@ -27,6 +29,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/scheduling"
 
 	apiv1 "github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/apis/v1"
+	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/auth"
 	"github.com/kanya-approve/karpenter-provider-rackspace-spot/pkg/providers/pricing"
 )
 
@@ -293,7 +296,11 @@ func TestCreate_IdempotentOnAlreadyExists(t *testing.T) {
 
 	api.MockSpotNodePoolAPI.EXPECT().
 		CreateSpotNodePool(gomock.Any(), testOrgID, gomock.Any()).
-		Return(errors.New("HTTP 409: AlreadyExists"))
+		Return(fmt.Errorf("failed to create spot node pool: %w", &auth.APIError{
+			StatusCode: http.StatusConflict,
+			Method:     http.MethodPost,
+			Path:       "/apis/ngpc.rxt.io/v1/namespaces/" + testOrgID + "/spotnodepools",
+		}))
 	api.MockSpotNodePoolAPI.EXPECT().
 		GetSpotNodePool(gomock.Any(), testOrgID, gomock.Any()).
 		Return(&rxtspot.SpotNodePool{Name: PoolName(newClaim("uid-4", "")), BidPrice: "0.05"}, nil)
@@ -316,11 +323,59 @@ func TestDelete_NotFoundMapsToErrPoolNotFound(t *testing.T) {
 
 	api.MockSpotNodePoolAPI.EXPECT().
 		DeleteSpotNodePool(gomock.Any(), testOrgID, "karpenter-uid-5").
-		Return(errors.New("HTTP 404: NotFound"))
+		Return(fmt.Errorf("failed to delete spot node pool: %w", &auth.APIError{
+			StatusCode: http.StatusNotFound,
+			Method:     http.MethodDelete,
+			Path:       "/apis/ngpc.rxt.io/v1/namespaces/" + testOrgID + "/spotnodepools/karpenter-uid-5",
+		}))
 
 	err := p.Delete(context.Background(), MakeProviderID(testCloudspace, PoolTypeSpot, "karpenter-uid-5"))
 	if !errors.Is(err, ErrPoolNotFound) {
 		t.Fatalf("expected ErrPoolNotFound, got %v", err)
+	}
+}
+
+// Only the Spot API saying this pool is missing means the pool is gone.
+// ErrPoolNotFound tells Karpenter the instance no longer exists, so it drops
+// the finalizer on a Delete and releases the NodeClaim on a Get. Any other
+// failure that read as one -- a 404 from a different lookup the same call
+// made, or text that happens to mention a 404 -- would leave a running pool
+// with nothing tracking it.
+func TestPoolNotFoundIsNotGuessed(t *testing.T) {
+	const name = "karpenter-uid-6"
+	for desc, err := range map[string]error{
+		"404 for the server class": fmt.Errorf("failed to get server class: %w", &auth.APIError{
+			StatusCode: http.StatusNotFound,
+			Method:     http.MethodGet,
+			Path:       "/apis/ngpc.rxt.io/v1/serverclasses/" + testServerCls,
+		}),
+		"404 for a different pool": &auth.APIError{
+			StatusCode: http.StatusNotFound,
+			Method:     http.MethodDelete,
+			Path:       "/apis/ngpc.rxt.io/v1/namespaces/" + testOrgID + "/spotnodepools/" + name + "-other",
+		},
+		"token exchange got a 404": fmt.Errorf("failed to delete spot node pool: %w", &auth.AuthError{
+			Err: errors.New("authentication failed: 404 Not Found"),
+		}),
+		"organization lookup missed": fmt.Errorf("organization '%s' not found", testOrgID),
+	} {
+		t.Run(desc, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			api := newAPI(ctrl)
+			p := NewProvider(api, &stubPricing{}, &stubInstanceType{}, testCloudspace, testOrgID)
+
+			api.MockSpotNodePoolAPI.EXPECT().
+				DeleteSpotNodePool(gomock.Any(), testOrgID, name).
+				Return(err)
+
+			got := p.Delete(context.Background(), MakeProviderID(testCloudspace, PoolTypeSpot, name))
+			if got == nil {
+				t.Fatal("expected the failure to be reported")
+			}
+			if errors.Is(got, ErrPoolNotFound) {
+				t.Fatalf("%v was read as the pool being gone", err)
+			}
+		})
 	}
 }
 
